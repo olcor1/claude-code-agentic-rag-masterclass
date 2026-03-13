@@ -10,3 +10,4 @@ Track your progress through the masterclass. Update this file as you complete mo
 ## Modules
 
 ### Module 1: App Shell + Observability
+- `[-]` Local full-stack scaffold implemented, pending environment boot and runtime validation

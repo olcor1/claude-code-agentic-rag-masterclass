@@ -55,6 +55,25 @@ A hands-on course where you collaborate with Claude Code to build a full-feature
 - [CLAUDE.md](./CLAUDE.md) — Context for Claude Code
 - [PROGRESS.md](./PROGRESS.md) — Track your build progress
 
+## Local Module 1 Scaffold
+
+The repository now includes a local Module 1 implementation scaffold:
+
+- `backend/` FastAPI API with JWT auth, document ingestion, pgvector retrieval, SSE chat streaming, and optional LangSmith tracing
+- `frontend/` Vite + React client with auth, upload flow, document list, conversation list, and grounded chat UI
+- `docker-compose.yml` for local PostgreSQL + pgvector
+- `.env.example` plus `frontend/.env.example` for environment bootstrap
+
+### Run It
+
+1. Copy `.env.example` to `.env` and set your local LLM endpoint values.
+2. Start PostgreSQL with `docker compose up -d`.
+3. Create a backend venv, install `backend/requirements.txt`, then run `python backend/scripts/init_db.py`.
+4. Start the backend from `backend/` with `uvicorn app.main:app --reload`.
+5. Install frontend dependencies in `frontend/` and run `npm run dev`.
+
+Python note: the current OpenAI SDK emits an upstream compatibility warning on Python `3.14`, so Python `3.12` or `3.13` is the safer local target if you want a quieter runtime.
+
 ## Join the Community
 
 If you want to connect with hundreds of builders creating production-grade AI and RAG systems, join us in [The AI Automators community](https://www.theaiautomators.com/). Share your progress, get help when you're stuck, and see what others are building.
