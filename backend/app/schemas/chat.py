@@ -1,3 +1,4 @@
+from typing import Any
 from datetime import datetime
 from uuid import UUID
 
@@ -8,8 +9,16 @@ class ConversationCreateRequest(BaseModel):
     title: str | None = None
 
 
+class MetadataFilters(BaseModel):
+    document_types: list[str] = Field(default_factory=list)
+    topics: list[str] = Field(default_factory=list)
+    entities: list[str] = Field(default_factory=list)
+    languages: list[str] = Field(default_factory=list)
+
+
 class StreamMessageRequest(BaseModel):
     content: str = Field(min_length=1)
+    metadata_filters: MetadataFilters | None = None
 
 
 class MessageResponse(BaseModel):
@@ -20,6 +29,7 @@ class MessageResponse(BaseModel):
     role: str
     content: str
     citations: list[dict] = Field(default_factory=list)
+    agent_trace: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
 
 

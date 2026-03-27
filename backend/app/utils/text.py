@@ -1,5 +1,9 @@
+def normalize_text(content: str) -> str:
+    return " ".join(content.replace("\ufeff", "").split())
+
+
 def chunk_text(content: str, chunk_size: int, chunk_overlap: int) -> list[str]:
-    cleaned = " ".join(content.split())
+    cleaned = normalize_text(content)
     if not cleaned:
         return []
 

@@ -55,5 +55,10 @@ def stream_message(
     user=Depends(get_current_user),
 ) -> StreamingResponse:
     get_conversation_or_404(db, conversation_id, user.id)
-    generator = stream_conversation_reply(conversation_id=conversation_id, user_id=str(user.id), content=payload.content)
+    generator = stream_conversation_reply(
+        conversation_id=conversation_id,
+        user_id=str(user.id),
+        content=payload.content,
+        metadata_filters=payload.metadata_filters.model_dump() if payload.metadata_filters else None,
+    )
     return StreamingResponse(generator, media_type="text/event-stream")

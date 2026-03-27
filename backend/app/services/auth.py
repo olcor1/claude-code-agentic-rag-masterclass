@@ -6,10 +6,11 @@ from sqlalchemy.orm import Session
 
 from app.core.security import create_access_token, decode_access_token, hash_password, verify_password
 from app.db.models import User
-from app.db.session import get_db
+from app.db.session import bind_current_user_context, enable_auth_bypass_context, get_db
 
 
 def register_user(db: Session, email: str, password: str) -> User:
+    enable_auth_bypass_context(db)
     existing = db.scalar(select(User).where(User.email == email))
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
@@ -22,6 +23,7 @@ def register_user(db: Session, email: str, password: str) -> User:
 
 
 def authenticate_user(db: Session, email: str, password: str) -> str:
+    enable_auth_bypass_context(db)
     user = db.scalar(select(User).where(User.email == email))
     if not user or not verify_password(password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
@@ -48,4 +50,5 @@ def get_current_user(
     except Exception as exc:  # pragma: no cover - invalid token path
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
 
+    bind_current_user_context(db, payload["sub"])
     return get_user_by_id(db, payload["sub"])

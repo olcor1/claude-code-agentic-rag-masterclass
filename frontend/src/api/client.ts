@@ -2,6 +2,8 @@ import type {
   Conversation,
   ConversationDetail,
   DocumentRecord,
+  IngestionJob,
+  MetadataFilters,
   Message,
   TokenResponse,
   User,
@@ -14,6 +16,7 @@ type RequestOptions = {
   token?: string | null;
   body?: BodyInit | null;
   headers?: HeadersInit;
+  cache?: RequestCache;
 };
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -29,6 +32,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     method: options.method ?? "GET",
     headers,
     body: options.body ?? null,
+    cache: options.cache,
   });
 
   if (!response.ok) {
@@ -80,13 +84,33 @@ export async function fetchDocuments(token: string): Promise<DocumentRecord[]> {
 export async function fetchDocumentStatus(
   token: string,
   documentId: string,
-): Promise<{ id: string; status: string; error_message: string | null }> {
-  return request(`/documents/${documentId}/status`, { token });
+): Promise<{
+  document_id: string;
+  ingestion_job_id: string;
+  status: IngestionJob["status"];
+  last_ingestion_result: DocumentRecord["last_ingestion_result"];
+  error_message: string | null;
+  metadata_status: DocumentRecord["metadata_status"];
+  metadata_error: string | null;
+  metadata_extracted_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  updated_at: string | null;
+}> {
+  return request(`/documents/${documentId}/status`, {
+    token,
+    cache: "no-store",
+    headers: {
+      "Cache-Control": "no-cache",
+      Pragma: "no-cache",
+    },
+  });
 }
 
-export async function uploadDocument(token: string, file: File): Promise<DocumentRecord> {
+export async function uploadDocument(token: string, file: File, sourceKey = file.name): Promise<DocumentRecord> {
   const form = new FormData();
   form.append("file", file);
+  form.append("source_key", sourceKey);
   return request<DocumentRecord>("/documents/upload", {
     method: "POST",
     token,
@@ -94,30 +118,31 @@ export async function uploadDocument(token: string, file: File): Promise<Documen
   });
 }
 
-type StreamHandlers = {
-  onMeta?: (citations: Message["citations"]) => void;
-  onToken?: (token: string) => void;
-  onDone?: (message: Message) => void;
-};
-
-export async function streamConversationMessage(
-  token: string,
-  conversationId: string,
-  content: string,
-  handlers: StreamHandlers,
-): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/conversations/${conversationId}/messages/stream`, {
-    method: "POST",
+export async function deleteDocument(token: string, documentId: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/documents/${documentId}`, {
+    method: "DELETE",
     headers: {
-      "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ content }),
   });
 
-  if (!response.ok || !response.body) {
-    const payload = await response.json().catch(() => ({ detail: "Streaming request failed" }));
-    throw new Error(payload.detail ?? "Streaming request failed");
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ detail: "Delete request failed" }));
+    throw new Error(payload.detail ?? "Delete request failed");
+  }
+}
+
+type StreamEvent = {
+  event: string;
+  data: unknown;
+};
+
+async function readEventStream(
+  response: Response,
+  onEvent: (event: StreamEvent) => void,
+): Promise<void> {
+  if (!response.body) {
+    throw new Error("Streaming response body is unavailable");
   }
 
   const reader = response.body.getReader();
@@ -132,18 +157,14 @@ export async function streamConversationMessage(
       .map((line) => line.replace("data:", "").trim())
       .join("\n");
 
-    if (!event || !data) return;
+    if (!event || !data) {
+      return;
+    }
 
-    const parsed = JSON.parse(data);
-    if (event === "meta") {
-      handlers.onMeta?.(parsed.citations ?? []);
-    }
-    if (event === "token") {
-      handlers.onToken?.(parsed.text ?? "");
-    }
-    if (event === "done") {
-      handlers.onDone?.(parsed.message);
-    }
+    onEvent({
+      event,
+      data: JSON.parse(data),
+    });
   };
 
   while (true) {
@@ -163,5 +184,99 @@ export async function streamConversationMessage(
       }
       break;
     }
+  }
+}
+
+type StreamHandlers = {
+  onMeta?: (citations: Message["citations"]) => void;
+  onStatus?: (status: string) => void;
+  onTrace?: (agentTrace: NonNullable<Message["agent_trace"]>) => void;
+  onToken?: (token: string) => void;
+  onDone?: (message: Message) => void;
+};
+
+export async function streamConversationMessage(
+  token: string,
+  conversationId: string,
+  content: string,
+  handlers: StreamHandlers,
+  metadataFilters: MetadataFilters | null = null,
+): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/conversations/${conversationId}/messages/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      content,
+      metadata_filters: metadataFilters,
+    }),
+  });
+
+  if (!response.ok || !response.body) {
+    const payload = await response.json().catch(() => ({ detail: "Streaming request failed" }));
+    throw new Error(payload.detail ?? "Streaming request failed");
+  }
+
+  await readEventStream(response, ({ event, data }) => {
+    const parsed = data as Record<string, unknown>;
+    if (event === "meta") {
+      handlers.onMeta?.((parsed.citations as Message["citations"]) ?? []);
+    }
+    if (event === "status") {
+      handlers.onStatus?.((parsed.text as string) ?? "");
+    }
+    if (event === "trace" && parsed.agentTrace) {
+      handlers.onTrace?.(parsed.agentTrace as NonNullable<Message["agent_trace"]>);
+    }
+    if (event === "token") {
+      handlers.onToken?.((parsed.text as string) ?? "");
+    }
+    if (event === "done") {
+      handlers.onDone?.(parsed.message as Message);
+    }
+  });
+}
+
+type DocumentStatusStreamHandlers = {
+  onDocument?: (document: DocumentRecord) => void;
+  onDone?: (document: DocumentRecord) => void;
+};
+
+export async function streamDocumentStatus(
+  token: string,
+  documentId: string,
+  handlers: DocumentStatusStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/documents/${documentId}/status/stream`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    signal,
+  });
+
+  if (!response.ok || !response.body) {
+    const payload = await response.json().catch(() => ({ detail: "Document status stream failed" }));
+    throw new Error(payload.detail ?? "Document status stream failed");
+  }
+
+  try {
+    await readEventStream(response, ({ event, data }) => {
+      const parsed = data as { document?: DocumentRecord };
+      if (event === "document" && parsed.document) {
+        handlers.onDocument?.(parsed.document);
+      }
+      if (event === "done" && parsed.document) {
+        handlers.onDone?.(parsed.document);
+      }
+    });
+  } catch (error) {
+    if (signal?.aborted) {
+      return;
+    }
+    throw error;
   }
 }

@@ -1,0 +1,2 @@
+ALTER TABLE messages
+ADD COLUMN IF NOT EXISTS agent_trace JSONB NOT NULL DEFAULT '{}'::jsonb;

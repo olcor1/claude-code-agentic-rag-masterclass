@@ -10,3 +10,4 @@ python-multipart==0.0.20
 email-validator==2.2.0
 openai==1.99.9
 langsmith==0.4.13
+docling==2.79.0

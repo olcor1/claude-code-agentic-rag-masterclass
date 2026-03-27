@@ -1,0 +1,30 @@
+C:\Repo_VS_Code\Agentic-rag\claude-code-agentic-rag-masterclass\backend\venv\Lib\site-packages\openai\_compat.py:48: UserWarning: Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater.
+  from pydantic.v1.typing import (
+INFO:     Started server process [114852]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+[32m[INFO] 2026-03-26 20:39:30,416 [RapidOCR] base.py:22: Using engine_name: torch[0m
+[32m[INFO] 2026-03-26 20:39:30,429 [RapidOCR] device_config.py:57: Using CPU device[0m
+[32m[INFO] 2026-03-26 20:39:30,471 [RapidOCR] download_file.py:60: File exists and is valid: C:\Repo_VS_Code\Agentic-rag\claude-code-agentic-rag-masterclass\backend\venv\Lib\site-packages\rapidocr\models\ch_PP-OCRv4_det_infer.pth[0m
+[32m[INFO] 2026-03-26 20:39:30,472 [RapidOCR] main.py:50: Using C:\Repo_VS_Code\Agentic-rag\claude-code-agentic-rag-masterclass\backend\venv\Lib\site-packages\rapidocr\models\ch_PP-OCRv4_det_infer.pth[0m
+[32m[INFO] 2026-03-26 20:39:30,773 [RapidOCR] base.py:22: Using engine_name: torch[0m
+[32m[INFO] 2026-03-26 20:39:30,775 [RapidOCR] device_config.py:57: Using CPU device[0m
+[32m[INFO] 2026-03-26 20:39:30,779 [RapidOCR] download_file.py:60: File exists and is valid: C:\Repo_VS_Code\Agentic-rag\claude-code-agentic-rag-masterclass\backend\venv\Lib\site-packages\rapidocr\models\ch_ptocr_mobile_v2.0_cls_infer.pth[0m
+[32m[INFO] 2026-03-26 20:39:30,779 [RapidOCR] main.py:50: Using C:\Repo_VS_Code\Agentic-rag\claude-code-agentic-rag-masterclass\backend\venv\Lib\site-packages\rapidocr\models\ch_ptocr_mobile_v2.0_cls_infer.pth[0m
+[32m[INFO] 2026-03-26 20:39:30,887 [RapidOCR] base.py:22: Using engine_name: torch[0m
+[32m[INFO] 2026-03-26 20:39:30,889 [RapidOCR] device_config.py:57: Using CPU device[0m
+[32m[INFO] 2026-03-26 20:39:30,962 [RapidOCR] download_file.py:60: File exists and is valid: C:\Repo_VS_Code\Agentic-rag\claude-code-agentic-rag-masterclass\backend\venv\Lib\site-packages\rapidocr\models\ch_PP-OCRv4_rec_infer.pth[0m
+[32m[INFO] 2026-03-26 20:39:30,963 [RapidOCR] main.py:50: Using C:\Repo_VS_Code\Agentic-rag\claude-code-agentic-rag-masterclass\backend\venv\Lib\site-packages\rapidocr\models\ch_PP-OCRv4_rec_infer.pth[0m
+[32m[INFO] 2026-03-26 20:39:56,794 [RapidOCR] base.py:22: Using engine_name: torch[0m
+[32m[INFO] 2026-03-26 20:39:56,795 [RapidOCR] device_config.py:57: Using CPU device[0m
+[32m[INFO] 2026-03-26 20:39:56,811 [RapidOCR] download_file.py:60: File exists and is valid: C:\Repo_VS_Code\Agentic-rag\claude-code-agentic-rag-masterclass\backend\venv\Lib\site-packages\rapidocr\models\ch_PP-OCRv4_det_infer.pth[0m
+[32m[INFO] 2026-03-26 20:39:56,813 [RapidOCR] main.py:50: Using C:\Repo_VS_Code\Agentic-rag\claude-code-agentic-rag-masterclass\backend\venv\Lib\site-packages\rapidocr\models\ch_PP-OCRv4_det_infer.pth[0m
+[32m[INFO] 2026-03-26 20:39:57,074 [RapidOCR] base.py:22: Using engine_name: torch[0m
+[32m[INFO] 2026-03-26 20:39:57,076 [RapidOCR] device_config.py:57: Using CPU device[0m
+[32m[INFO] 2026-03-26 20:39:57,078 [RapidOCR] download_file.py:60: File exists and is valid: C:\Repo_VS_Code\Agentic-rag\claude-code-agentic-rag-masterclass\backend\venv\Lib\site-packages\rapidocr\models\ch_ptocr_mobile_v2.0_cls_infer.pth[0m
+[32m[INFO] 2026-03-26 20:39:57,078 [RapidOCR] main.py:50: Using C:\Repo_VS_Code\Agentic-rag\claude-code-agentic-rag-masterclass\backend\venv\Lib\site-packages\rapidocr\models\ch_ptocr_mobile_v2.0_cls_infer.pth[0m
+[32m[INFO] 2026-03-26 20:39:57,188 [RapidOCR] base.py:22: Using engine_name: torch[0m
+[32m[INFO] 2026-03-26 20:39:57,188 [RapidOCR] device_config.py:57: Using CPU device[0m
+[32m[INFO] 2026-03-26 20:39:57,218 [RapidOCR] download_file.py:60: File exists and is valid: C:\Repo_VS_Code\Agentic-rag\claude-code-agentic-rag-masterclass\backend\venv\Lib\site-packages\rapidocr\models\ch_PP-OCRv4_rec_infer.pth[0m
+[32m[INFO] 2026-03-26 20:39:57,220 [RapidOCR] main.py:50: Using C:\Repo_VS_Code\Agentic-rag\claude-code-agentic-rag-masterclass\backend\venv\Lib\site-packages\rapidocr\models\ch_PP-OCRv4_rec_infer.pth[0m
