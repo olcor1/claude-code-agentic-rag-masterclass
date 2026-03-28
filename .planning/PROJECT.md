@@ -23,14 +23,14 @@ Please check to make sure the following capabilities already exist in the codeba
 - Supabase Auth with JWT verification
 - Thread and message management
 - Real-time ingestion status via Supabase Realtime
+- Filesystem-style `ls` and `tree` navigation rooted at `/`, `/global`, and `/private`
+- Explorer/chat integration for filesystem-style navigation requests
 
 ### Active
 
 - [ ] Nested folder structure with unlimited depth
 - [ ] Global folders (shared across all users) and per-user folders (private)
 - [ ] Store full extracted markdown alongside chunks for grep/read operations
-- [ ] `ls` tool — list files and subfolders in a given path
-- [ ] `tree` tool — hierarchical structure with depth limit and truncation
 - [ ] `grep` tool — regex search over document content, returns matching document names
 - [ ] `glob` tool — file pattern matching against document names (e.g., `*.md`, `reports/**/*.pdf`)
 - [ ] `read` tool — read full document or line range (split at newlines)
@@ -69,6 +69,10 @@ React/Vite frontend + FastAPI backend + Supabase (Postgres with pgvector). Docum
 - **RLS**: All tools must respect Row-Level Security — users only see their folders/documents (except global)
 - **Ingestion dependency**: grep/glob/read only work on ingested content, not raw uploaded files
 
+## Current State
+
+Phase 4 is complete. The knowledge base now supports verified filesystem-style `ls` and `tree` navigation, and the explorer/chat path consumes that contract directly. Next planned work is Phase 5: search tools (`grep` and `glob`).
+
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
@@ -80,4 +84,4 @@ React/Vite frontend + FastAPI backend + Supabase (Postgres with pgvector). Docum
 | tree uses depth limit + truncation | Protects context window for large KBs | — Pending |
 
 ---
-*Last updated: 2026-02-04 after initialization*
+*Last updated: 2026-03-28 after Phase 4 completion*
