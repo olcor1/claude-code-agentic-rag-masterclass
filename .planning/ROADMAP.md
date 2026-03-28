@@ -83,7 +83,7 @@ Plans:
 
 Plans:
 - [x] 04-01-PLAN.md — Navigation service hardening for root/path visibility and ls/tree regression coverage
-- [ ] 04-02-PLAN.md — Explorer/chat contract alignment for ls/tree tool access and routing coverage
+- [x] 04-02-PLAN.md — Explorer/chat contract alignment for ls/tree tool access and routing coverage
 
 ### Phase 5: Search Tools
 **Goal**: Agent can search for documents by content patterns and filename patterns
