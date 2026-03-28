@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 1: Folder Schema & Core APIs** - Database foundation for nested folders with global/per-user support and CRUD endpoints
 - [ ] **Phase 2: Document-Folder Integration** - Connect documents to folders, store full markdown, enable file and folder moves
 - [ ] **Phase 3: Ingestion UI** - Folder tree visualization with CRUD controls and folder-targeted uploads
-- [ ] **Phase 4: Navigation Tools** - ls and tree tools for browsing folder structure
+- [x] **Phase 4: Navigation Tools** - ls and tree tools for browsing folder structure
 - [ ] **Phase 5: Search Tools** - grep and glob tools for content and filename searching
 - [ ] **Phase 6: Read Tool** - Full document and line-range reading capability
 - [ ] **Phase 7: Explorer Sub-Agent** - Orchestration agent with access to all KB tools
@@ -140,7 +140,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7
 | 1. Folder Schema & Core APIs | 0/2 | Not started | - |
 | 2. Document-Folder Integration | 0/4 | Not started | - |
 | 3. Ingestion UI | 0/3 | Not started | - |
-| 4. Navigation Tools | 0/2 | Not started | - |
+| 4. Navigation Tools | 2/2 | Complete | 2026-03-28 |
 | 5. Search Tools | 0/2 | Not started | - |
 | 6. Read Tool | 0/2 | Not started | - |
 | 7. Explorer Sub-Agent | 0/3 | Not started | - |
