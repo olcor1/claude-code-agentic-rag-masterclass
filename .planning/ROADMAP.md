@@ -82,8 +82,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 04-01-PLAN.md — Database function and Python service for ls/tree navigation
-- [ ] 04-02-PLAN.md — Tool definitions and executor integration for agent access
+- [ ] 04-01-PLAN.md — Navigation service hardening for root/path visibility and ls/tree regression coverage
+- [ ] 04-02-PLAN.md — Explorer/chat contract alignment for ls/tree tool access and routing coverage
 
 ### Phase 5: Search Tools
 **Goal**: Agent can search for documents by content patterns and filename patterns
