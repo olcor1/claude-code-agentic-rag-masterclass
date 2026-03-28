@@ -82,7 +82,7 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 04-01-PLAN.md — Navigation service hardening for root/path visibility and ls/tree regression coverage
+- [x] 04-01-PLAN.md — Navigation service hardening for root/path visibility and ls/tree regression coverage
 - [ ] 04-02-PLAN.md — Explorer/chat contract alignment for ls/tree tool access and routing coverage
 
 ### Phase 5: Search Tools

@@ -23,8 +23,8 @@ Requirements for this milestone. Each maps to roadmap phases.
 
 ### KB Exploration Tools
 
-- [ ] **TOOL-01**: Agent can use `ls(path)` to list files and subfolders in a folder
-- [ ] **TOOL-02**: Agent can use `tree(path, depth?, limit?)` to get hierarchical structure with depth limit and truncation
+- [x] **TOOL-01**: Agent can use `ls(path)` to list files and subfolders in a folder
+- [x] **TOOL-02**: Agent can use `tree(path, depth?, limit?)` to get hierarchical structure with depth limit and truncation
 - [ ] **TOOL-03**: Agent can use `grep(pattern, path?)` to regex search content, returns matching document names
 - [ ] **TOOL-04**: Agent can use `glob(pattern)` to match filenames by pattern (e.g., `*.pdf`, `reports/**/*`)
 - [ ] **TOOL-05**: Agent can use `read(document_id)` to read full document content
