@@ -152,6 +152,41 @@ def filter_documents_for_target(
     ]
 
 
+def list_child_folders(
+    folders: list[Folder],
+    *,
+    scope: str,
+    parent_id: UUID | None,
+    user_id: UUID | str,
+) -> list[Folder]:
+    return [
+        folder
+        for folder in folders
+        if folder.scope == scope
+        and folder.parent_id == parent_id
+        and (scope == "global" or str(folder.user_id) == str(user_id))
+    ]
+
+
+def list_child_documents(
+    documents: list[Document],
+    *,
+    scope: str,
+    parent_id: UUID | None,
+    user_id: UUID | str,
+) -> list[Document]:
+    if parent_id is None:
+        if scope != "private":
+            return []
+        return [
+            document
+            for document in documents
+            if document.folder_id is None and str(document.user_id) == str(user_id)
+        ]
+
+    return [document for document in documents if document.folder_id == parent_id]
+
+
 def match_glob_pattern(pattern: str, *, full_path: str, relative_path: str, filename: str) -> bool:
     normalized_pattern = pattern.lstrip("/")
     candidates = {
@@ -178,24 +213,8 @@ def execute_ls(db: Session, user_id: UUID | str, path: str | None = None) -> dic
         }
 
     child_parent_id = target.folder.id if target.folder else None
-    child_folders = [
-        folder
-        for folder in folders
-        if folder.scope == target.scope
-        and folder.parent_id == child_parent_id
-        and (target.scope == "global" or str(folder.user_id) == str(user_id))
-    ]
-    child_documents = [
-        document
-        for document in documents
-        if (document.folder_id == child_parent_id)
-        or (
-            child_parent_id is None
-            and target.scope == "private"
-            and document.folder_id is None
-            and str(document.user_id) == str(user_id)
-        )
-    ]
+    child_folders = list_child_folders(folders, scope=target.scope, parent_id=child_parent_id, user_id=user_id)
+    child_documents = list_child_documents(documents, scope=target.scope, parent_id=child_parent_id, user_id=user_id)
 
     entries = [
         {
@@ -249,24 +268,8 @@ def execute_tree(
             return
 
         child_parent_id = current_folder.id if current_folder else None
-        child_folders = [
-            folder
-            for folder in folders
-            if folder.scope == scope
-            and folder.parent_id == child_parent_id
-            and (scope == "global" or str(folder.user_id) == str(user_id))
-        ]
-        child_documents = [
-            document
-            for document in documents
-            if (document.folder_id == child_parent_id)
-            or (
-                child_parent_id is None
-                and scope == "private"
-                and document.folder_id is None
-                and str(document.user_id) == str(user_id)
-            )
-        ]
+        child_folders = list_child_folders(folders, scope=scope, parent_id=child_parent_id, user_id=user_id)
+        child_documents = list_child_documents(documents, scope=scope, parent_id=child_parent_id, user_id=user_id)
 
         indent = "  " * current_depth
         for folder in sorted(child_folders, key=lambda item: item.name.lower()):

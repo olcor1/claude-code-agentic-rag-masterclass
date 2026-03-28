@@ -18,7 +18,6 @@ def register_user(db: Session, email: str, password: str) -> User:
     user = User(email=email, password_hash=hash_password(password))
     db.add(user)
     db.commit()
-    db.refresh(user)
     return user
 
 

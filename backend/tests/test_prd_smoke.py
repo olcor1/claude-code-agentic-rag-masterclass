@@ -11,6 +11,7 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from fastapi import HTTPException
 from sqlalchemy import select, text
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -19,14 +20,14 @@ if str(BACKEND_DIR) not in sys.path:
 
 from app.core.config import settings
 from app.core.security import decode_access_token
-from app.db.models import Conversation, ConversationPIIRegistryEntry, Document, DocumentChunk, Folder, IngestionJob, Message
-from app.db.session import SessionLocal, bind_current_user_context, engine
+from app.db.models import Conversation, ConversationPIIRegistryEntry, Document, DocumentChunk, Folder, IngestionJob, Message, User
+from app.db.session import SessionLocal, bind_current_user_context, enable_auth_bypass_context, engine
 from app.services.auth import authenticate_user, register_user
 from app.services.chat import stream_conversation_reply
 from app.services.document_parser_ocr import DocumentExtractionError, ParserDependencyError, parse_document_file
 from app.services.documents import prepare_document_upload, process_document, stream_document_status
 from app.services.embeddings import EmbeddingProviderError, embed_texts
-from app.services.knowledge_base import execute_glob, execute_grep, execute_read
+from app.services.knowledge_base import execute_glob, execute_grep, execute_ls, execute_read, execute_tree
 from app.services.redaction import ConversationRedactionSession, DetectedPIIEntity, build_redaction_session
 from app.services.sub_agents import select_sub_agent_targets
 from app.services.web_search import search_web
@@ -54,6 +55,15 @@ class PRDSmokeTests(unittest.TestCase):
             user = register_user(db, address, password)
             token = authenticate_user(db, address, password)
             return user.id, token
+
+    def create_user(self, email: str | None = None) -> uuid.UUID:
+        address = email or f"{uuid.uuid4()}@example.com"
+        with SessionLocal() as db:
+            enable_auth_bypass_context(db)
+            user = User(email=address, password_hash="test-hash")
+            db.add(user)
+            db.commit()
+            return user.id
 
     def create_completed_document(
         self,
@@ -223,6 +233,121 @@ class PRDSmokeTests(unittest.TestCase):
         self.assertEqual([item["filename"] for item in grep_result["matches"]], ["q1-report.md"])
         self.assertEqual([item["filename"] for item in glob_result["matches"]], ["q1-report.md"])
         self.assertEqual(read_result["content"], "Beta mention")
+
+    def test_knowledge_base_ls_lists_virtual_roots_and_scoped_entries(self) -> None:
+        owner_id = self.create_user()
+        viewer_id = self.create_user()
+        shared_name = f"shared-{uuid.uuid4().hex[:8]}"
+        notes_name = f"notes-{uuid.uuid4().hex[:8]}"
+        self.create_folder(user_id=viewer_id, name=notes_name, scope="private")
+        self.create_folder(user_id=owner_id, name=f"secret-{uuid.uuid4().hex[:8]}", scope="private")
+        shared_folder_id = self.create_folder(user_id=owner_id, name=shared_name, scope="global")
+        self.create_completed_document(user_id=viewer_id, filename="inbox.md")
+        self.create_completed_document(user_id=owner_id, filename="owner-root.md")
+        self.create_completed_document(user_id=owner_id, filename="shared-plan.md", folder_id=shared_folder_id)
+
+        with SessionLocal() as db:
+            bind_current_user_context(db, str(viewer_id))
+            root_result = execute_ls(db, viewer_id, "/")
+            private_result = execute_ls(db, viewer_id, "/private")
+            global_result = execute_ls(db, viewer_id, "/global")
+            shared_result = execute_ls(db, viewer_id, f"/global/{shared_name}")
+
+            with self.assertRaises(HTTPException) as invalid_path_error:
+                execute_ls(db, viewer_id, "/reports")
+
+            with self.assertRaises(HTTPException) as missing_path_error:
+                execute_ls(db, viewer_id, "/private/missing")
+
+        self.assertEqual(
+            root_result,
+            {
+                "path": "/",
+                "entries": [
+                    {"kind": "folder", "name": "global", "path": "/global", "scope": "global"},
+                    {"kind": "folder", "name": "private", "path": "/private", "scope": "private"},
+                ],
+            },
+        )
+        self.assertEqual([entry["name"] for entry in private_result["entries"]], [notes_name, "inbox.md"])
+        self.assertEqual(private_result["entries"][0]["path"], f"/private/{notes_name}")
+        self.assertEqual(private_result["entries"][1]["path"], "/private/inbox.md")
+        self.assertEqual(private_result["entries"][1]["status"], "completed")
+        self.assertIn(shared_name, [entry["name"] for entry in global_result["entries"]])
+        self.assertNotIn("inbox.md", [entry["name"] for entry in global_result["entries"]])
+        self.assertEqual([entry["name"] for entry in shared_result["entries"]], ["shared-plan.md"])
+        self.assertEqual(invalid_path_error.exception.status_code, 400)
+        self.assertEqual(
+            invalid_path_error.exception.detail,
+            "Knowledge-base paths must start with /global or /private",
+        )
+        self.assertEqual(missing_path_error.exception.status_code, 404)
+        self.assertEqual(missing_path_error.exception.detail, "Folder path not found: /private/missing")
+
+    def test_knowledge_base_tree_respects_depth_limit_truncation_and_visibility(self) -> None:
+        owner_id = self.create_user()
+        viewer_id = self.create_user()
+        shared_name = f"shared-{uuid.uuid4().hex[:8]}"
+        quarterly_name = f"quarterly-{uuid.uuid4().hex[:8]}"
+        notes_name = f"notes-{uuid.uuid4().hex[:8]}"
+        archive_name = f"archive-{uuid.uuid4().hex[:8]}"
+        shared_folder_id = self.create_folder(user_id=owner_id, name=shared_name, scope="global")
+        shared_nested_folder_id = self.create_folder(
+            user_id=owner_id,
+            name=quarterly_name,
+            scope="global",
+            parent_id=shared_folder_id,
+        )
+        private_folder_id = self.create_folder(user_id=viewer_id, name=notes_name, scope="private")
+        private_nested_folder_id = self.create_folder(
+            user_id=viewer_id,
+            name=archive_name,
+            scope="private",
+            parent_id=private_folder_id,
+        )
+        owner_private_folder_id = self.create_folder(
+            user_id=owner_id,
+            name=f"secret-{uuid.uuid4().hex[:8]}",
+            scope="private",
+        )
+        self.create_completed_document(user_id=viewer_id, filename="inbox.md")
+        self.create_completed_document(user_id=viewer_id, filename="notes-doc.md", folder_id=private_folder_id)
+        self.create_completed_document(user_id=viewer_id, filename="archive-doc.md", folder_id=private_nested_folder_id)
+        self.create_completed_document(user_id=owner_id, filename="owner-root.md")
+        self.create_completed_document(user_id=owner_id, filename="shared-plan.md", folder_id=shared_nested_folder_id)
+        self.create_completed_document(user_id=owner_id, filename="secret-doc.md", folder_id=owner_private_folder_id)
+
+        with SessionLocal() as db:
+            bind_current_user_context(db, str(viewer_id))
+            private_depth_one = execute_tree(db, viewer_id, "/private", depth=1, limit=20)
+            private_depth_two = execute_tree(db, viewer_id, "/private", depth=2, limit=20)
+            global_tree = execute_tree(db, viewer_id, "/global", depth=3, limit=20)
+            truncated_tree = execute_tree(db, viewer_id, "/", depth=3, limit=3)
+
+        self.assertEqual(private_depth_one["path"], "/private")
+        self.assertEqual(private_depth_one["depth"], 1)
+        self.assertEqual(private_depth_one["limit"], 20)
+        self.assertFalse(private_depth_one["truncated"])
+        self.assertEqual(private_depth_one["output"].splitlines(), ["/private", f"  {notes_name}/", "  inbox.md"])
+
+        self.assertIn(f"    {archive_name}/", private_depth_two["output"])
+        self.assertIn("    notes-doc.md", private_depth_two["output"])
+        self.assertNotIn("archive-doc.md", private_depth_two["output"])
+        self.assertNotIn("owner-root.md", private_depth_two["output"])
+        self.assertNotIn("secret-doc.md", private_depth_two["output"])
+
+        self.assertFalse(global_tree["truncated"])
+        self.assertIn("/global", global_tree["output"])
+        self.assertIn(f"  {shared_name}/", global_tree["output"])
+        self.assertIn(f"    {quarterly_name}/", global_tree["output"])
+        self.assertIn("      shared-plan.md", global_tree["output"])
+        self.assertNotIn("inbox.md", global_tree["output"])
+
+        self.assertTrue(truncated_tree["truncated"])
+        self.assertEqual(truncated_tree["depth"], 3)
+        self.assertEqual(truncated_tree["limit"], 3)
+        self.assertEqual(len(truncated_tree["output"].splitlines()), 3)
+        self.assertNotIn("/private", truncated_tree["output"])
 
     def test_record_manager_marks_unchanged_reuploads_without_requeueing(self) -> None:
         user_id, _ = self.register_account()
