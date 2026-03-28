@@ -40,11 +40,14 @@ EXPLORER_TOOLS = [
         "type": "function",
         "function": {
             "name": "ls",
-            "description": "List folders and files inside a knowledge-base path",
+            "description": "List folders and files at /, /global, /private, or a nested knowledge-base path as structured entries.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Path like /global/reports or /private"},
+                    "path": {
+                        "type": "string",
+                        "description": "Path like /, /global/reports, or /private. Returns entries with kind, path, IDs, and status.",
+                    },
                 },
             },
         },
@@ -53,13 +56,18 @@ EXPLORER_TOOLS = [
         "type": "function",
         "function": {
             "name": "tree",
-            "description": "Show a hierarchical tree for a knowledge-base path",
+            "description": "Show a hierarchical tree for /, /global, /private, or a nested knowledge-base path with truncation metadata.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string"},
-                    "depth": {"type": "integer", "minimum": 1, "maximum": 6},
-                    "limit": {"type": "integer", "minimum": 10, "maximum": 200},
+                    "path": {"type": "string", "description": "Path like /, /global/reports, or /private"},
+                    "depth": {"type": "integer", "minimum": 1, "maximum": 6, "description": "Maximum folder depth to render."},
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 10,
+                        "maximum": 200,
+                        "description": "Maximum output lines before the response is marked truncated.",
+                    },
                 },
             },
         },

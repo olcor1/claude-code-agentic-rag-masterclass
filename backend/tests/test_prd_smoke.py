@@ -27,6 +27,7 @@ from app.services.chat import stream_conversation_reply
 from app.services.document_parser_ocr import DocumentExtractionError, ParserDependencyError, parse_document_file
 from app.services.documents import prepare_document_upload, process_document, stream_document_status
 from app.services.embeddings import EmbeddingProviderError, embed_texts
+from app.services.explorer_agent import EXPLORER_TOOLS, ExplorerResult, run_explorer_sub_agent
 from app.services.knowledge_base import execute_glob, execute_grep, execute_ls, execute_read, execute_tree
 from app.services.redaction import ConversationRedactionSession, DetectedPIIEntity, build_redaction_session
 from app.services.sub_agents import select_sub_agent_targets
@@ -348,6 +349,84 @@ class PRDSmokeTests(unittest.TestCase):
         self.assertEqual(truncated_tree["limit"], 3)
         self.assertEqual(len(truncated_tree["output"].splitlines()), 3)
         self.assertNotIn("/private", truncated_tree["output"])
+
+    def test_explorer_agent_navigation_tools_expose_phase_4_contracts(self) -> None:
+        user_id = self.create_user()
+        ls_tool = next(item["function"] for item in EXPLORER_TOOLS if item["function"]["name"] == "ls")
+        tree_tool = next(item["function"] for item in EXPLORER_TOOLS if item["function"]["name"] == "tree")
+
+        self.assertIn("/global", ls_tool["description"])
+        self.assertIn("structured entries", ls_tool["description"])
+        self.assertIn("/private", tree_tool["description"])
+        self.assertIn("truncation metadata", tree_tool["description"])
+
+        with SessionLocal() as db:
+            bind_current_user_context(db, str(user_id))
+            with patch(
+                "app.services.explorer_agent.explorer_client.chat.completions.create",
+                side_effect=RuntimeError("force fallback"),
+            ), patch(
+                "app.services.explorer_agent.execute_tree",
+                return_value={
+                    "path": "/private",
+                    "depth": 3,
+                    "limit": 60,
+                    "truncated": False,
+                    "output": "/private\n  notes/",
+                },
+            ) as mocked_tree:
+                result = run_explorer_sub_agent(db, user_id=user_id, question="Show me the structure under /private")
+
+        mocked_tree.assert_called_once()
+        self.assertEqual(mocked_tree.call_args.args[2], "/private")
+        self.assertEqual(mocked_tree.call_args.kwargs, {"depth": 3, "limit": 60})
+        self.assertEqual(result.answer, "/private\n  notes/")
+        self.assertEqual(result.tool_events[0].tool_name, "tree")
+
+    def test_chat_routes_navigation_requests_through_explorer_context(self) -> None:
+        user_id = self.create_user()
+        conversation_id = self.create_conversation(user_id=user_id, title="Navigation thread")
+        captured_messages: list[dict[str, str]] = []
+        explorer_result = ExplorerResult(
+            reasoning_summary="Used ls/tree to inspect the private root.",
+            answer="/private\n  notes/",
+            findings=["/private\n  notes/"],
+            analyses=[],
+            tool_events=[],
+        )
+
+        def fake_stream_create(*, model, messages, temperature, stream):  # noqa: ANN001
+            self.assertTrue(stream)
+            captured_messages.extend(messages)
+            return [SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="Explorer-backed answer."))])]
+
+        with patch("app.services.chat.retrieve_relevant_chunks", return_value=[]), patch(
+            "app.services.chat.run_explorer_sub_agent",
+            return_value=explorer_result,
+        ) as mocked_explorer, patch(
+            "app.services.chat.select_sub_agent_targets",
+            return_value=[],
+        ), patch(
+            "app.services.chat.search_web",
+            side_effect=AssertionError("web fallback should not run for explorer-backed navigation requests"),
+        ), patch(
+            "app.services.chat.client.chat.completions.create",
+            side_effect=fake_stream_create,
+        ):
+            events = list(stream_conversation_reply(str(conversation_id), str(user_id), "Show me the structure under /private"))
+
+        mocked_explorer.assert_called_once()
+        self.assertIn("Knowledge-base explorer findings", captured_messages[-1]["content"])
+        self.assertIn("/private\n  notes/", captured_messages[-1]["content"])
+
+        done_payload = next(
+            json.loads(line.removeprefix("data: "))
+            for event in events
+            if event.startswith("event: done")
+            for line in event.splitlines()
+            if line.startswith("data: ")
+        )
+        self.assertEqual(done_payload["message"]["content"], "Explorer-backed answer.")
 
     def test_record_manager_marks_unchanged_reuploads_without_requeueing(self) -> None:
         user_id, _ = self.register_account()
