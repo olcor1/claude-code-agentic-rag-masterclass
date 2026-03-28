@@ -90,6 +90,18 @@ export type IngestionJob = {
   updated_at: string;
 };
 
+export type FolderScope = "private" | "global";
+
+export type FolderRecord = {
+  id: string;
+  user_id: string;
+  parent_id: string | null;
+  name: string;
+  scope: FolderScope;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ExtractedDocumentMetadata = {
   title: string | null;
   summary: string | null;
@@ -109,6 +121,7 @@ export type MetadataFilters = {
 export type DocumentRecord = {
   id: string;
   user_id: string;
+  folder_id: string | null;
   filename: string;
   source_key: string;
   storage_path: string;
@@ -125,5 +138,6 @@ export type DocumentRecord = {
   error_message: string | null;
   created_at: string;
   updated_at: string;
+  folder: FolderRecord | null;
   ingestion_job: IngestionJob;
 };

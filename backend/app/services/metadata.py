@@ -5,6 +5,7 @@ from openai import OpenAI
 from pydantic import BaseModel, Field, ValidationError
 
 from app.core.config import settings
+from app.services.local_llm import get_local_llm_client, get_local_llm_model
 from app.services.tracing import traceable
 from app.utils.text import normalize_text
 
@@ -125,18 +126,22 @@ def get_completion_text(content: Any) -> str:
 
 
 def request_metadata_completion(messages: list[dict[str, str]]) -> str:
+    local_client = get_local_llm_client()
+    local_model = get_local_llm_model()
+    client = local_client or metadata_client
+    model = local_model or settings.resolved_llm_metadata_model
     request_kwargs = {
-        "model": settings.resolved_llm_metadata_model,
+        "model": model,
         "messages": messages,
         "temperature": 0,
     }
     try:
-        response = metadata_client.chat.completions.create(
+        response = client.chat.completions.create(
             **request_kwargs,
             response_format={"type": "json_object"},
         )
     except Exception:
-        response = metadata_client.chat.completions.create(**request_kwargs)
+        response = client.chat.completions.create(**request_kwargs)
 
     if not response.choices:
         raise ValueError("Metadata extraction returned no choices")

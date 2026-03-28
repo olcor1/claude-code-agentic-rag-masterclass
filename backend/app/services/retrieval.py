@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.models import Document, DocumentChunk
 from app.services.embeddings import embed_texts
+from app.services.folders import visible_document_clause
 from app.services.metadata import normalize_filter_values
 from app.services.tracing import traceable
 
@@ -148,7 +149,7 @@ def fetch_vector_candidates(
     statement = (
         select(DocumentChunk, Document, distance)
         .join(Document, Document.id == DocumentChunk.document_id)
-        .where(Document.user_id == user_id, Document.status == "completed")
+        .where(visible_document_clause(user_id), Document.status == "completed")
     )
     statement = apply_metadata_filters(statement, metadata_filters)
     rows = list(db.execute(statement.order_by(distance).limit(settings.retrieval_vector_limit)).all())
@@ -177,7 +178,7 @@ def fetch_keyword_candidates(
         select(DocumentChunk, Document, keyword_score)
         .join(Document, Document.id == DocumentChunk.document_id)
         .where(
-            Document.user_id == user_id,
+            visible_document_clause(user_id),
             Document.status == "completed",
             search_vector.op("@@")(ts_query),
         )

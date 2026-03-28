@@ -3,6 +3,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.folder import FolderResponse
+
 
 class IngestionJobResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -31,6 +33,7 @@ class DocumentResponse(BaseModel):
 
     id: UUID
     user_id: UUID
+    folder_id: UUID | None
     filename: str
     source_key: str
     storage_path: str
@@ -47,7 +50,12 @@ class DocumentResponse(BaseModel):
     error_message: str | None
     created_at: datetime
     updated_at: datetime
+    folder: FolderResponse | None = None
     ingestion_job: IngestionJobResponse
+
+
+class DocumentMoveRequest(BaseModel):
+    folder_id: UUID | None = None
 
 
 class DocumentStatusResponse(BaseModel):

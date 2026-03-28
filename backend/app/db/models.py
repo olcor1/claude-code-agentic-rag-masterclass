@@ -20,6 +20,7 @@ class User(Base):
 
     conversations: Mapped[list["Conversation"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     documents: Mapped[list["Document"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    folders: Mapped[list["Folder"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
 class Conversation(Base):
@@ -33,6 +34,10 @@ class Conversation(Base):
 
     user: Mapped["User"] = relationship(back_populates="conversations")
     messages: Mapped[list["Message"]] = relationship(back_populates="conversation", cascade="all, delete-orphan")
+    pii_registry_entries: Mapped[list["ConversationPIIRegistryEntry"]] = relationship(
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+    )
 
 
 class Message(Base):
@@ -53,14 +58,66 @@ class Message(Base):
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")
 
 
+class ConversationPIIRegistryEntry(Base):
+    __tablename__ = "conversation_pii_registry_entries"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        index=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    entity_type: Mapped[str] = mapped_column(String(64))
+    normalized_value: Mapped[str] = mapped_column(String(512))
+    real_value: Mapped[str] = mapped_column(Text)
+    surrogate_value: Mapped[str] = mapped_column(Text)
+    cluster_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    profile: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    conversation: Mapped["Conversation"] = relationship(back_populates="pii_registry_entries")
+    user: Mapped["User"] = relationship()
+
+
+class Folder(Base):
+    __tablename__ = "folders"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("folders.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(255))
+    scope: Mapped[str] = mapped_column(String(16), default="private")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user: Mapped["User"] = relationship(back_populates="folders")
+    parent: Mapped["Folder | None"] = relationship(remote_side="Folder.id", back_populates="children")
+    children: Mapped[list["Folder"]] = relationship(back_populates="parent", cascade="all, delete-orphan")
+    documents: Mapped[list["Document"]] = relationship(back_populates="folder", cascade="all, delete-orphan")
+
+
 class Document(Base):
     __tablename__ = "documents"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    folder_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("folders.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     filename: Mapped[str] = mapped_column(String(255))
     source_key: Mapped[str] = mapped_column(Text)
     storage_path: Mapped[str] = mapped_column(String(500))
+    full_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     hash_algorithm: Mapped[str] = mapped_column(String(32), default="sha256")
     version: Mapped[int] = mapped_column(Integer, default=0)
@@ -79,6 +136,7 @@ class Document(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     user: Mapped["User"] = relationship(back_populates="documents")
+    folder: Mapped["Folder | None"] = relationship(back_populates="documents")
     chunks: Mapped[list["DocumentChunk"]] = relationship(back_populates="document", cascade="all, delete-orphan")
     ingestion_job: Mapped["IngestionJob"] = relationship(
         back_populates="document",

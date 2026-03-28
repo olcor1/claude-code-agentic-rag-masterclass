@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.config import settings
 from app.db.models import Document, DocumentChunk, IngestionJob
 from app.db.session import SessionLocal, bind_current_user_context
-from app.schemas.document import DocumentResponse
+from app.schemas.document import DocumentMoveRequest, DocumentResponse
 from app.services.document_parser_ocr import (
     DocumentExtractionError,
     DocumentParserError,
@@ -24,6 +24,7 @@ from app.services.document_parser_ocr import (
     parse_document_file,
 )
 from app.services.embeddings import embed_texts
+from app.services.folders import apply_document_visibility, get_document_target_folder
 from app.services.metadata import METADATA_SCHEMA_VERSION, extract_document_metadata
 from app.services.tracing import traceable
 from app.utils.text import chunk_text, normalize_text
@@ -159,7 +160,9 @@ def prepare_document_upload(
     filename: str,
     source_key: str | None,
     storage_path: str,
+    folder_id: str | None = None,
 ) -> tuple[Document, bool]:
+    target_folder = get_document_target_folder(db, folder_id=folder_id, user_id=user_id)
     resolved_source_key = normalize_source_key(source_key, filename)
     try:
         upload_hash = compute_storage_hash(storage_path, filename)
@@ -175,9 +178,11 @@ def prepare_document_upload(
     if document is None:
         document = Document(
             user_id=user_id,
+            folder_id=target_folder.id if target_folder else None,
             filename=filename,
             source_key=resolved_source_key,
             storage_path=storage_path,
+            full_markdown=None,
             content_hash=None,
             hash_algorithm=HASH_ALGORITHM,
             version=0,
@@ -229,6 +234,7 @@ def prepare_document_upload(
         return document, False
 
     document.source_key = resolved_source_key
+    document.folder_id = target_folder.id if target_folder else None
     document.hash_algorithm = HASH_ALGORITHM
     document.error_message = None
 
@@ -239,6 +245,7 @@ def prepare_document_upload(
     else:
         document.filename = filename
         document.storage_path = storage_path
+        document.full_markdown = None
         document.content_hash = None
         document.pending_filename = None
         document.pending_storage_path = None
@@ -328,6 +335,7 @@ def process_document(document_id: str, ingestion_job_id: str, user_id: str) -> N
 
             document.filename = candidate_filename
             document.storage_path = candidate_storage_path
+            document.full_markdown = parsed_document.text_for_chunking
             document.content_hash = candidate_hash or compute_content_hash(parsed_document.text_for_hashing)
             document.hash_algorithm = HASH_ALGORITHM
             document.version = next_version
@@ -410,24 +418,32 @@ def process_document(document_id: str, ingestion_job_id: str, user_id: str) -> N
 def list_documents_for_user(db: Session, user_id: str) -> list[Document]:
     statement = (
         select(Document)
-        .options(selectinload(Document.ingestion_job))
-        .where(Document.user_id == user_id)
+        .options(selectinload(Document.ingestion_job), selectinload(Document.folder))
         .order_by(Document.updated_at.desc())
     )
-    return list(db.scalars(statement))
+    return list(db.scalars(apply_document_visibility(statement, user_id)))
 
 
 def get_document_for_user(db: Session, document_id: str, user_id: str) -> Document | None:
     statement = (
         select(Document)
-        .options(selectinload(Document.ingestion_job))
+        .options(selectinload(Document.ingestion_job), selectinload(Document.folder))
+        .where(Document.id == document_id)
+    )
+    return db.scalar(apply_document_visibility(statement, user_id))
+
+
+def get_owned_document_for_user(db: Session, document_id: str, user_id: str) -> Document | None:
+    statement = (
+        select(Document)
+        .options(selectinload(Document.ingestion_job), selectinload(Document.folder))
         .where(Document.id == document_id, Document.user_id == user_id)
     )
     return db.scalar(statement)
 
 
 def delete_document_for_user(db: Session, document_id: str, user_id: str) -> None:
-    document = get_document_for_user(db, document_id, user_id)
+    document = get_owned_document_for_user(db, document_id, user_id)
     if document is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
@@ -444,6 +460,20 @@ def delete_document_for_user(db: Session, document_id: str, user_id: str) -> Non
 
     for storage_path in storage_paths:
         remove_uploaded_file(storage_path)
+
+
+def move_document_for_user(db: Session, document_id: str, user_id: str, payload: DocumentMoveRequest) -> Document:
+    document = get_owned_document_for_user(db, document_id, user_id)
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    target_folder = get_document_target_folder(db, folder_id=str(payload.folder_id) if payload.folder_id else None, user_id=user_id)
+    document.folder_id = target_folder.id if target_folder else None
+    db.commit()
+    refreshed = get_document_for_user(db, document_id, user_id)
+    if refreshed is None:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to reload moved document")
+    return refreshed
 
 
 def serialize_document_payload(document: Document) -> dict[str, Any]:

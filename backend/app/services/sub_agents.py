@@ -12,7 +12,9 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.models import Document, DocumentChunk
+from app.services.folders import visible_document_clause
 from app.services.metadata import extract_json_object, get_completion_text
+from app.services.redaction import ConversationRedactionSession
 from app.services.retrieval import RetrievedChunk
 from app.services.tracing import traceable
 from app.utils.text import normalize_text
@@ -123,7 +125,7 @@ def select_sub_agent_targets(
     completed_documents = list(
         db.scalars(
             select(Document)
-            .where(Document.user_id == user_id, Document.status == "completed")
+            .where(visible_document_clause(user_id), Document.status == "completed")
             .order_by(Document.updated_at.desc())
         )
     )
@@ -161,6 +163,10 @@ def select_sub_agent_targets(
 
 
 def load_document_text(db: Session, document_id: UUID) -> str:
+    document = db.get(Document, document_id)
+    if document and document.full_markdown:
+        return document.full_markdown
+
     statement = (
         select(DocumentChunk.content)
         .where(DocumentChunk.document_id == document_id)
@@ -207,9 +213,10 @@ def build_sub_agent_messages(
     question: str,
     document: Document,
     document_text: str,
+    document_metadata_text: str,
     was_truncated: bool,
+    redaction_active: bool = False,
 ) -> list[dict[str, str]]:
-    metadata = document.extracted_metadata or {}
     truncation_note = (
         "The provided source covers representative sections from a long document, so mention uncertainty if your answer depends on omitted parts."
         if was_truncated
@@ -224,10 +231,16 @@ def build_sub_agent_messages(
         "Keep key_points and evidence_snippets concise. "
         "If the document is insufficient, say so clearly."
     )
+    if redaction_active:
+        system_prompt += (
+            " Some content may contain anonymized surrogate values. "
+            "If you mention names, emails, phone numbers, locations, dates, or URLs from the source, "
+            "reproduce them exactly as shown."
+        )
     user_prompt = (
         f"User question:\n{question}\n\n"
         f"Document filename: {document.filename}\n"
-        f"Document metadata: {json.dumps(metadata, default=str)}\n"
+        f"Document metadata: {document_metadata_text}\n"
         f"Scope note: {truncation_note}\n\n"
         "Document content:\n"
         f"{document_text}"
@@ -275,6 +288,7 @@ def run_document_sub_agent(
     *,
     question: str,
     target: SubAgentTarget,
+    redaction_session: ConversationRedactionSession | None = None,
 ) -> SubAgentAnalysis:
     full_text = load_document_text(db, target.document.id)
     if not full_text.strip():
@@ -290,14 +304,26 @@ def run_document_sub_agent(
         )
 
     source_text, was_truncated = build_document_source_text(full_text)
+    metadata_text = json.dumps(target.document.extracted_metadata or {}, default=str)
+    if redaction_session and redaction_session.has_active_redaction():
+        question = redaction_session.anonymize_text(question)
+        source_text = redaction_session.anonymize_text(source_text)
+        metadata_text = redaction_session.anonymize_text(metadata_text)
     payload = request_sub_agent_payload(
         build_sub_agent_messages(
             question=question,
             document=target.document,
             document_text=source_text,
+            document_metadata_text=metadata_text,
             was_truncated=was_truncated,
+            redaction_active=bool(redaction_session and redaction_session.has_active_redaction()),
         )
     )
+    if redaction_session and redaction_session.has_active_redaction():
+        payload.reasoning_summary = redaction_session.deanonymize_text(payload.reasoning_summary)
+        payload.answer = redaction_session.deanonymize_text(payload.answer)
+        payload.key_points = [redaction_session.deanonymize_text(item) for item in payload.key_points]
+        payload.evidence_snippets = [redaction_session.deanonymize_text(item) for item in payload.evidence_snippets]
     return SubAgentAnalysis(
         document=target.document,
         selection_reason=target.selection_reason,

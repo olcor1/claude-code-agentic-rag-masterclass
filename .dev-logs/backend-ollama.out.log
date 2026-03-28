@@ -86,3 +86,29 @@ INFO:     127.0.0.1:65493 - "GET /conversations HTTP/1.1" 200 OK
 INFO:     127.0.0.1:63812 - "GET /documents HTTP/1.1" 200 OK
 INFO:     127.0.0.1:57333 - "GET /conversations/34be2cd8-73a5-4372-b6ef-c6af1e8d32e6 HTTP/1.1" 200 OK
 INFO:     127.0.0.1:57333 - "GET /conversations/34be2cd8-73a5-4372-b6ef-c6af1e8d32e6 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57641 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64844 - "OPTIONS /auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50934 - "OPTIONS /auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64844 - "GET /auth/me HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:50934 - "GET /auth/me HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:50390 - "OPTIONS /auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55951 - "OPTIONS /auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50390 - "GET /auth/me HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:50390 - "GET /auth/me HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:55514 - "OPTIONS /auth/login HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63821 - "POST /auth/login HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:63821 - "OPTIONS /auth/register HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55514 - "POST /auth/register HTTP/1.1" 201 Created
+INFO:     127.0.0.1:55514 - "GET /auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55514 - "OPTIONS /conversations HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63821 - "OPTIONS /documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55514 - "OPTIONS /folders HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63821 - "OPTIONS /conversations HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55514 - "OPTIONS /documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63821 - "OPTIONS /folders HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55514 - "GET /conversations HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55514 - "GET /folders HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:63821 - "GET /documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63821 - "GET /folders HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:55514 - "GET /conversations HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63821 - "GET /documents HTTP/1.1" 200 OK

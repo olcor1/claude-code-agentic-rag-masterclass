@@ -19,6 +19,8 @@ $backendVenvDir = Join-Path $backendDir "venv"
 $backendPython = Join-Path $backendVenvDir "Scripts\python.exe"
 $shellPath = (Get-Process -Id $PID).Path
 $logDir = Join-Path $projectRoot ".dev-logs"
+$preferredFrontendPort = 5173
+$fallbackFrontendPorts = @(4173, 3000)
 $isVsCodeSession = ($env:TERM_PROGRAM -eq "vscode") -or (-not [string]::IsNullOrWhiteSpace($env:VSCODE_PID))
 $shouldUseCurrentTerminal = $UseCurrentTerminal -or $isVsCodeSession
 
@@ -187,6 +189,40 @@ function Stop-ListeningProcess {
     }
 }
 
+function Test-TcpPortAvailable {
+    param([int]$Port)
+
+    $listener = $null
+    try {
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, $Port)
+        $listener.Start()
+        return $true
+    }
+    catch {
+        return $false
+    }
+    finally {
+        if ($listener) {
+            try {
+                $listener.Stop()
+            }
+            catch {
+            }
+        }
+    }
+}
+
+function Resolve-FrontendPort {
+    $candidatePorts = @($preferredFrontendPort) + $fallbackFrontendPorts
+    foreach ($port in $candidatePorts) {
+        if (Test-TcpPortAvailable -Port $port) {
+            return $port
+        }
+    }
+
+    throw "Unable to find an available frontend port. Checked: $($candidatePorts -join ', ')"
+}
+
 Ensure-FileFromExample -Path (Join-Path $projectRoot ".env") -ExamplePath (Join-Path $projectRoot ".env.example")
 Ensure-FileFromExample -Path (Join-Path $frontendDir ".env") -ExamplePath (Join-Path $frontendDir ".env.example")
 
@@ -261,18 +297,22 @@ if (-not $NoBackend) {
 }
 
 if (-not $NoFrontend) {
-    Stop-ListeningProcess -Port 5173 -Name "frontend"
-    Write-Step "Launching frontend on http://localhost:5173"
+    Stop-ListeningProcess -Port $preferredFrontendPort -Name "frontend"
+    $frontendPort = Resolve-FrontendPort
+    if ($frontendPort -ne $preferredFrontendPort) {
+        Write-Warning "Port $preferredFrontendPort is unavailable. Falling back to frontend port $frontendPort."
+    }
+    Write-Step "Launching frontend on http://localhost:$frontendPort"
     if ($shouldUseCurrentTerminal) {
         Start-ServiceJob `
             -Name "agentic-rag-frontend" `
             -WorkingDirectory $frontendDir `
             -FilePath "npm" `
-            -ArgumentList @("run", "dev", "--", "--host", "0.0.0.0", "--port", "5173", "--strictPort") `
+            -ArgumentList @("run", "dev", "--", "--host", "0.0.0.0", "--port", "$frontendPort", "--strictPort") `
             -LogPath (Join-Path $logDir "frontend.log")
     }
     else {
-        Start-ServiceWindow -Title "Agentic RAG Frontend" -WorkingDirectory $frontendDir -Command "npm run dev -- --host 0.0.0.0 --port 5173 --strictPort"
+        Start-ServiceWindow -Title "Agentic RAG Frontend" -WorkingDirectory $frontendDir -Command "npm run dev -- --host 0.0.0.0 --port $frontendPort --strictPort"
     }
 }
 
@@ -282,7 +322,7 @@ if (-not $NoBackend) {
     Write-Host "Backend:  http://localhost:8000"
 }
 if (-not $NoFrontend) {
-    Write-Host "Frontend: http://localhost:5173"
+    Write-Host "Frontend: http://localhost:$frontendPort"
 }
 if ($shouldUseCurrentTerminal) {
     Write-Host "Logs:     $logDir"

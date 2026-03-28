@@ -22,6 +22,14 @@ from app.services.agent_trace import (
     set_agent_summary,
     update_agent_step,
 )
+from app.services.explorer_agent import ExplorerResult, run_explorer_sub_agent
+from app.services.knowledge_base import looks_like_explorer_request
+from app.services.redaction import (
+    ConversationRedactionSession,
+    build_redaction_session,
+    build_redaction_status_sse_payload,
+    chunk_deanonymized_output,
+)
 from app.services.retrieval import RetrievedChunk, retrieve_relevant_chunks
 from app.services.sub_agents import (
     SubAgentAnalysis,
@@ -32,7 +40,6 @@ from app.services.sub_agents import (
 from app.services.tracing import traceable
 from app.services.web_search import WebSearchResult, search_web
 from app.services.workspace_sql import WorkspaceSQLResult, run_workspace_sql
-
 
 client = OpenAI(base_url=settings.llm_base_url, api_key=settings.llm_api_key)
 WORKSPACE_SQL_ANALYTICS_PATTERN = re.compile(
@@ -89,6 +96,25 @@ CURRENT_INFO_HINTS = (
     "release",
     "announcement",
 )
+TEXT_TRANSFORMATION_HINTS = (
+    "rewrite",
+    "reword",
+    "rephrase",
+    "paraphrase",
+    "translate",
+    "edit this",
+    "polish this",
+    "improve this",
+    "clean this up",
+)
+LITERAL_TRANSFORMATION_HINTS = (
+    "rewrite this exactly",
+    "repeat this exactly",
+    "copy this exactly",
+    "return this exactly",
+    "keep all details",
+    "preserving all details",
+)
 
 
 def truncate_text(value: str, max_length: int = 320) -> str:
@@ -138,12 +164,25 @@ def should_run_workspace_sql(content: str) -> bool:
     return bool(re.search(r"\bwhat\b.*\b(documents|docs|files|topics|entities|languages|conversations|threads|messages)\b", lowered))
 
 
+def looks_like_text_transformation_request(content: str) -> bool:
+    lowered = " ".join(content.lower().split())
+    if any(term in lowered for term in TEXT_TRANSFORMATION_HINTS):
+        return True
+    return bool(re.search(r"\b(summarize|shorten|expand|rewrite|rephrase|paraphrase|translate)\b.*\b(this|text|message|paragraph|email|note)\b", lowered))
+
+
+def looks_like_literal_transformation_request(content: str) -> bool:
+    lowered = " ".join(content.lower().split())
+    return any(term in lowered for term in LITERAL_TRANSFORMATION_HINTS)
+
+
 def should_run_web_search(
     content: str,
     *,
     retrieved_chunks: list[RetrievedChunk],
     sql_result: WorkspaceSQLResult | None,
     sub_agent_results: list[SubAgentAnalysis],
+    explorer_result: ExplorerResult | None = None,
 ) -> bool:
     if not settings.web_search_enabled:
         return False
@@ -153,7 +192,9 @@ def should_run_web_search(
         return True
     if any(term in lowered for term in CURRENT_INFO_HINTS) and not looks_like_workspace_question(lowered):
         return True
-    if retrieved_chunks or sql_result or sub_agent_results:
+    if looks_like_text_transformation_request(lowered):
+        return False
+    if retrieved_chunks or sql_result or sub_agent_results or (explorer_result and (explorer_result.answer or explorer_result.findings)):
         return False
     if looks_like_workspace_question(lowered):
         return False
@@ -177,6 +218,7 @@ def describe_filter_scope(metadata_filters: dict[str, Any] | None) -> str:
 def describe_main_agent_summary(
     retrieved_chunks: list[RetrievedChunk],
     sub_agent_results: list[SubAgentAnalysis],
+    explorer_result: ExplorerResult | None,
     sql_result: WorkspaceSQLResult | None,
     web_results: list[WebSearchResult],
 ) -> str:
@@ -185,6 +227,8 @@ def describe_main_agent_summary(
         evidence_parts.append(f"{len(retrieved_chunks)} retrieved chunk(s)")
     if sub_agent_results:
         evidence_parts.append(f"{len(sub_agent_results)} full-document sub-agent run(s)")
+    if explorer_result and (explorer_result.answer or explorer_result.analyses):
+        evidence_parts.append("knowledge-base exploration")
     if sql_result:
         evidence_parts.append("workspace SQL")
     if web_results:
@@ -199,6 +243,7 @@ def describe_main_agent_summary(
 def build_document_context_sections(
     retrieved_chunks: list[RetrievedChunk],
     sub_agent_results: list[SubAgentAnalysis],
+    explorer_result: ExplorerResult | None = None,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     sections: list[str] = []
     citations: list[dict[str, Any]] = []
@@ -252,6 +297,12 @@ def build_document_context_sections(
         )
         index += 1
 
+    if explorer_result and (explorer_result.answer or explorer_result.findings):
+        explorer_lines = ["Knowledge-base explorer findings", explorer_result.answer or "No synthesized explorer answer."]
+        if explorer_result.findings:
+            explorer_lines.append("Highlights:\n" + "\n".join(f"- {item}" for item in explorer_result.findings[:5]))
+        sections.append("\n".join(explorer_lines))
+
     return sections, citations
 
 
@@ -286,13 +337,69 @@ def build_web_citations(web_results: list[WebSearchResult]) -> list[dict[str, An
     ]
 
 
+def build_prompt_history(
+    history: list[Message] | list[dict[str, str]],
+    *,
+    redaction_session: ConversationRedactionSession | None = None,
+) -> list[dict[str, str]]:
+    prompt_history: list[dict[str, str]] = []
+    for item in history[-8:]:
+        if isinstance(item, dict):
+            role = item["role"]
+            content = item["content"]
+        else:
+            role = item.role
+            content = item.content
+        if redaction_session and redaction_session.has_active_redaction():
+            content = redaction_session.anonymize_text(content)
+        prompt_history.append({"role": role, "content": content})
+    return prompt_history
+
+
+def redact_sql_result_for_prompt(
+    sql_result: WorkspaceSQLResult | None,
+    *,
+    redaction_session: ConversationRedactionSession | None = None,
+) -> WorkspaceSQLResult | None:
+    if sql_result is None or not redaction_session or not redaction_session.has_active_redaction():
+        return sql_result
+    return WorkspaceSQLResult(
+        sql=redaction_session.anonymize_text(sql_result.sql),
+        columns=list(sql_result.columns),
+        rows=redaction_session.anonymize_jsonable(sql_result.rows),
+        row_count=sql_result.row_count,
+        rationale=redaction_session.anonymize_text(sql_result.rationale),
+        truncated=sql_result.truncated,
+    )
+
+
+def redact_web_results_for_prompt(
+    web_results: list[WebSearchResult],
+    *,
+    redaction_session: ConversationRedactionSession | None = None,
+) -> list[WebSearchResult]:
+    if not redaction_session or not redaction_session.has_active_redaction():
+        return web_results
+    return [
+        WebSearchResult(
+            title=redaction_session.anonymize_text(item.title),
+            url=redaction_session.anonymize_text(item.url),
+            snippet=redaction_session.anonymize_text(item.snippet),
+            domain=item.domain,
+        )
+        for item in web_results
+    ]
+
+
 def build_prompt(
     content: str,
-    history: list[Message],
+    history: list[Message] | list[dict[str, str]],
     document_sections: list[str],
     sql_result: WorkspaceSQLResult | None = None,
     web_results: list[WebSearchResult] | None = None,
     web_search_status: str | None = None,
+    redaction_active: bool = False,
+    literal_transformation: bool = False,
 ) -> list[dict[str, str]]:
     system_prompt = (
         "You are a grounded assistant for a local RAG workspace. "
@@ -302,10 +409,25 @@ def build_prompt(
         "Do not invent citations or claim certainty without evidence. "
         "If the available evidence is insufficient, say so clearly."
     )
+    if redaction_active:
+        system_prompt += (
+            " Some source values may be anonymized surrogates. "
+            "If you mention names, emails, phone numbers, locations, dates, times, or URLs from the source, "
+            "reproduce them in exactly the same format you were given."
+        )
+    if literal_transformation:
+        system_prompt += (
+            " The user is asking for a literal text transformation. "
+            "Return only the transformed text. "
+            "Do not add notes, explanations, commentary, or citations unless the user explicitly asks for them."
+        )
 
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     for message in history[-8:]:
-        messages.append({"role": message.role, "content": message.content})
+        if isinstance(message, dict):
+            messages.append(message)
+        else:
+            messages.append({"role": message.role, "content": message.content})
 
     user_prompt = "Knowledge base context:\n"
     user_prompt += "\n\n".join(document_sections) if document_sections else "No retrieved knowledge-base context."
@@ -360,6 +482,11 @@ def stream_conversation_reply(
         bind_current_user_context(db, user_id)
         conversation = get_conversation_or_404(db, UUID(conversation_id), UUID(user_id))
         history = sorted(conversation.messages, key=lambda item: item.created_at)
+        redaction_session = build_redaction_session(
+            db,
+            conversation_id=conversation.id,
+            user_id=conversation.user_id,
+        )
 
         user_message = Message(conversation_id=conversation.id, role="user", content=content, citations=[], agent_trace={})
         db.add(user_message)
@@ -441,9 +568,74 @@ def stream_conversation_reply(
             yield format_trace_sse(agent_trace)
 
         sub_agent_results: list[SubAgentAnalysis] = []
+        explorer_result: ExplorerResult | None = None
+        if looks_like_explorer_request(content):
+            yield format_sse("status", json.dumps({"text": "Exploring the knowledge base"}))
+            add_agent_reasoning(
+                agent_trace,
+                "The request looked like a filesystem-style knowledge-base task, so I delegated it to the explorer sub-agent.",
+            )
+            explorer_step = add_agent_step(
+                agent_trace,
+                title="Knowledge-base explorer",
+                kind="delegation",
+                tool_name="knowledge_base_explorer",
+                summary="Exploring folders, filenames, and extracted document text with filesystem-like tools.",
+                input_summary="The explorer can use ls, tree, grep, glob, read, and delegated document analysis.",
+            )
+            explorer_trace = create_agent_trace(
+                label="Sub-agent · Knowledge-base explorer",
+                kind="subagent",
+                summary="Inspecting the visible folder hierarchy and document corpus.",
+            )
+            add_child_agent(agent_trace, explorer_trace)
+            yield format_trace_sse(agent_trace)
+
+            try:
+                explorer_result = run_explorer_sub_agent(
+                    db,
+                    user_id=conversation.user_id,
+                    question=content,
+                    redaction_session=redaction_session,
+                )
+                for event in explorer_result.tool_events:
+                    add_agent_step(
+                        explorer_trace,
+                        title=event.tool_name.replace("_", " "),
+                        kind="tool",
+                        tool_name=event.tool_name,
+                        status="completed",
+                        summary=event.output_summary,
+                        input_summary=event.input_summary,
+                    )
+                if explorer_result.reasoning_summary:
+                    add_agent_reasoning(explorer_trace, explorer_result.reasoning_summary)
+                complete_agent(
+                    explorer_trace,
+                    summary=explorer_result.answer or "Explorer finished without a synthesized answer.",
+                )
+                update_agent_step(
+                    explorer_step,
+                    status="completed",
+                    summary="Explorer sub-agent completed its knowledge-base pass.",
+                    output_summary=explorer_result.reasoning_summary or "Explorer results were added to the answer context.",
+                )
+            except Exception as exc:  # pragma: no cover - provider-specific failure path
+                fail_agent(explorer_trace, "Knowledge-base exploration failed.")
+                update_agent_step(
+                    explorer_step,
+                    status="failed",
+                    summary="Knowledge-base explorer failed.",
+                    output_summary=str(exc),
+                )
+                explorer_result = None
+            yield format_trace_sse(agent_trace)
+
         full_document_request = looks_like_full_document_request(content)
         sub_agent_targets = select_sub_agent_targets(db, conversation.user_id, content, retrieved_chunks)
-        if sub_agent_targets:
+        if explorer_result and explorer_result.analyses:
+            sub_agent_results.extend(explorer_result.analyses)
+        if sub_agent_targets and not (explorer_result and explorer_result.analyses):
             yield format_sse("status", json.dumps({"text": "Delegating full-document analysis"}))
             add_agent_reasoning(
                 agent_trace,
@@ -481,7 +673,12 @@ def stream_conversation_reply(
                 yield format_trace_sse(agent_trace)
 
                 try:
-                    analysis = run_document_sub_agent(db, question=content, target=target)
+                    analysis = run_document_sub_agent(
+                        db,
+                        question=content,
+                        target=target,
+                        redaction_session=redaction_session,
+                    )
                     sub_agent_results.append(analysis)
                     update_agent_step(
                         child_step,
@@ -534,6 +731,7 @@ def stream_conversation_reply(
             retrieved_chunks=retrieved_chunks,
             sql_result=sql_result,
             sub_agent_results=sub_agent_results,
+            explorer_result=explorer_result,
         ):
             yield format_sse("status", json.dumps({"text": "Searching the web for fallback sources"}))
             web_step = add_agent_step(
@@ -545,7 +743,12 @@ def stream_conversation_reply(
             )
             yield format_trace_sse(agent_trace)
 
-            web_search_response = search_web(content)
+            web_search_query = (
+                redaction_session.anonymize_text(content)
+                if redaction_session.has_active_redaction()
+                else content
+            )
+            web_search_response = search_web(web_search_query)
             web_results = web_search_response.results
             if web_results:
                 web_search_status = f"Web fallback returned {len(web_results)} result(s)."
@@ -579,7 +782,11 @@ def stream_conversation_reply(
         elif not settings.web_search_enabled:
             web_search_status = "Web search fallback is disabled for this workspace."
 
-        document_sections, document_citations = build_document_context_sections(retrieved_chunks, sub_agent_results)
+        document_sections, document_citations = build_document_context_sections(
+            retrieved_chunks,
+            sub_agent_results,
+            explorer_result=explorer_result,
+        )
         citations = document_citations + build_sql_citations(sql_result) + build_web_citations(web_results)
         yield format_sse("meta", json.dumps({"citations": citations}))
 
@@ -589,11 +796,11 @@ def stream_conversation_reply(
             kind="tool",
             tool_name="chat_completion",
             summary="Drafting the final grounded response.",
-            input_summary=describe_main_agent_summary(retrieved_chunks, sub_agent_results, sql_result, web_results),
+            input_summary=describe_main_agent_summary(retrieved_chunks, sub_agent_results, explorer_result, sql_result, web_results),
         )
         set_agent_summary(
             agent_trace,
-            describe_main_agent_summary(retrieved_chunks, sub_agent_results, sql_result, web_results),
+            describe_main_agent_summary(retrieved_chunks, sub_agent_results, explorer_result, sql_result, web_results),
         )
         yield format_trace_sse(agent_trace)
 
@@ -602,13 +809,31 @@ def stream_conversation_reply(
         else:
             yield format_sse("status", json.dumps({"text": "Streaming answer with limited evidence"}))
 
+        prompt_history = build_prompt_history(history, redaction_session=redaction_session)
+        prompt_content = content
+        prompt_document_sections = document_sections
+        prompt_sql_result = sql_result
+        prompt_web_results = web_results
+        prompt_web_search_status = web_search_status
+        if redaction_session.has_active_redaction():
+            yield format_sse("redaction_status", json.dumps(build_redaction_status_sse_payload("anonymizing")))
+            prompt_content = redaction_session.anonymize_text(content)
+            prompt_document_sections = [redaction_session.anonymize_text(section) for section in document_sections]
+            prompt_sql_result = redact_sql_result_for_prompt(sql_result, redaction_session=redaction_session)
+            prompt_web_results = redact_web_results_for_prompt(web_results, redaction_session=redaction_session)
+            prompt_web_search_status = (
+                redaction_session.anonymize_text(web_search_status) if web_search_status else web_search_status
+            )
+
         prompt = build_prompt(
-            content,
-            history,
-            document_sections,
-            sql_result=sql_result,
-            web_results=web_results,
-            web_search_status=web_search_status,
+            prompt_content,
+            prompt_history,
+            prompt_document_sections,
+            sql_result=prompt_sql_result,
+            web_results=prompt_web_results,
+            web_search_status=prompt_web_search_status,
+            redaction_active=redaction_session.has_active_redaction(),
+            literal_transformation=looks_like_literal_transformation_request(content),
         )
         stream = client.chat.completions.create(
             model=settings.llm_chat_model,
@@ -623,9 +848,15 @@ def stream_conversation_reply(
             if not delta:
                 continue
             output_parts.append(delta)
-            yield format_sse("token", json.dumps({"text": delta}))
+            if not redaction_session.has_active_redaction():
+                yield format_sse("token", json.dumps({"text": delta}))
 
         assistant_content = "".join(output_parts).strip()
+        if redaction_session.has_active_redaction():
+            yield format_sse("redaction_status", json.dumps(build_redaction_status_sse_payload("deanonymizing")))
+            assistant_content = redaction_session.deanonymize_text(assistant_content)
+            for token_chunk in chunk_deanonymized_output(assistant_content):
+                yield format_sse("token", json.dumps({"text": token_chunk}))
         update_agent_step(
             synthesis_step,
             status="completed",
@@ -634,7 +865,7 @@ def stream_conversation_reply(
         )
         complete_agent(
             agent_trace,
-            summary=describe_main_agent_summary(retrieved_chunks, sub_agent_results, sql_result, web_results),
+            summary=describe_main_agent_summary(retrieved_chunks, sub_agent_results, explorer_result, sql_result, web_results),
         )
         yield format_trace_sse(agent_trace)
 

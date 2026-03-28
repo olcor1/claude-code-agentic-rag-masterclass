@@ -2,12 +2,14 @@ import type {
   Conversation,
   ConversationDetail,
   DocumentRecord,
+  FolderRecord,
   IngestionJob,
   MetadataFilters,
   Message,
   TokenResponse,
   User,
 } from "@/api/types";
+import { notifyUnauthorizedSession } from "@/lib/auth-session";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
@@ -37,6 +39,9 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ detail: "Request failed" }));
+    if (response.status === 401) {
+      throw notifyUnauthorizedSession(payload.detail ?? "Session expired. Sign in again.");
+    }
     throw new Error(payload.detail ?? "Request failed");
   }
 
@@ -81,6 +86,10 @@ export async function fetchDocuments(token: string): Promise<DocumentRecord[]> {
   return request<DocumentRecord[]>("/documents", { token });
 }
 
+export async function fetchFolders(token: string): Promise<FolderRecord[]> {
+  return request<FolderRecord[]>("/folders", { token });
+}
+
 export async function fetchDocumentStatus(
   token: string,
   documentId: string,
@@ -107,10 +116,18 @@ export async function fetchDocumentStatus(
   });
 }
 
-export async function uploadDocument(token: string, file: File, sourceKey = file.name): Promise<DocumentRecord> {
+export async function uploadDocument(
+  token: string,
+  file: File,
+  sourceKey = file.name,
+  folderId?: string | null,
+): Promise<DocumentRecord> {
   const form = new FormData();
   form.append("file", file);
   form.append("source_key", sourceKey);
+  if (folderId) {
+    form.append("folder_id", folderId);
+  }
   return request<DocumentRecord>("/documents/upload", {
     method: "POST",
     token,
@@ -128,6 +145,57 @@ export async function deleteDocument(token: string, documentId: string): Promise
 
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ detail: "Delete request failed" }));
+    if (response.status === 401) {
+      throw notifyUnauthorizedSession(payload.detail ?? "Session expired. Sign in again.");
+    }
+    throw new Error(payload.detail ?? "Delete request failed");
+  }
+}
+
+export async function moveDocument(token: string, documentId: string, folderId: string | null): Promise<DocumentRecord> {
+  return request<DocumentRecord>(`/documents/${documentId}/move`, {
+    method: "PATCH",
+    token,
+    body: JSON.stringify({ folder_id: folderId }),
+  });
+}
+
+export async function createFolder(
+  token: string,
+  payload: { name: string; parent_id?: string | null; scope: FolderRecord["scope"] },
+): Promise<FolderRecord> {
+  return request<FolderRecord>("/folders", {
+    method: "POST",
+    token,
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateFolder(
+  token: string,
+  folderId: string,
+  payload: { name?: string; parent_id?: string | null },
+): Promise<FolderRecord> {
+  return request<FolderRecord>(`/folders/${folderId}`, {
+    method: "PATCH",
+    token,
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteFolder(token: string, folderId: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/folders/${folderId}`, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ detail: "Delete request failed" }));
+    if (response.status === 401) {
+      throw notifyUnauthorizedSession(payload.detail ?? "Session expired. Sign in again.");
+    }
     throw new Error(payload.detail ?? "Delete request failed");
   }
 }
@@ -190,6 +258,7 @@ async function readEventStream(
 type StreamHandlers = {
   onMeta?: (citations: Message["citations"]) => void;
   onStatus?: (status: string) => void;
+  onRedactionStatus?: (stage: string, text: string) => void;
   onTrace?: (agentTrace: NonNullable<Message["agent_trace"]>) => void;
   onToken?: (token: string) => void;
   onDone?: (message: Message) => void;
@@ -216,6 +285,9 @@ export async function streamConversationMessage(
 
   if (!response.ok || !response.body) {
     const payload = await response.json().catch(() => ({ detail: "Streaming request failed" }));
+    if (response.status === 401) {
+      throw notifyUnauthorizedSession(payload.detail ?? "Session expired. Sign in again.");
+    }
     throw new Error(payload.detail ?? "Streaming request failed");
   }
 
@@ -226,6 +298,9 @@ export async function streamConversationMessage(
     }
     if (event === "status") {
       handlers.onStatus?.((parsed.text as string) ?? "");
+    }
+    if (event === "redaction_status") {
+      handlers.onRedactionStatus?.(((parsed.stage as string) ?? ""), ((parsed.text as string) ?? ""));
     }
     if (event === "trace" && parsed.agentTrace) {
       handlers.onTrace?.(parsed.agentTrace as NonNullable<Message["agent_trace"]>);
@@ -260,6 +335,9 @@ export async function streamDocumentStatus(
 
   if (!response.ok || !response.body) {
     const payload = await response.json().catch(() => ({ detail: "Document status stream failed" }));
+    if (response.status === 401) {
+      throw notifyUnauthorizedSession(payload.detail ?? "Session expired. Sign in again.");
+    }
     throw new Error(payload.detail ?? "Document status stream failed");
   }
 

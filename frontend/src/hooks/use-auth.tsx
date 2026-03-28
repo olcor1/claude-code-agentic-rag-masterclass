@@ -2,6 +2,7 @@ import { createContext, startTransition, useContext, useEffect, useState, type R
 
 import { fetchMe, login, register } from "@/api/client";
 import type { User } from "@/api/types";
+import { AUTH_TOKEN_STORAGE_KEY, AUTH_UNAUTHORIZED_EVENT } from "@/lib/auth-session";
 
 type AuthContextValue = {
   token: string | null;
@@ -14,7 +15,6 @@ type AuthContextValue = {
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
-const STORAGE_KEY = "agentic-rag-token";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
@@ -23,7 +23,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const savedToken = window.localStorage.getItem(STORAGE_KEY);
+    const savedToken = window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
     if (!savedToken) {
       setIsReady(true);
       return;
@@ -38,15 +38,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
       })
       .catch(() => {
-        window.localStorage.removeItem(STORAGE_KEY);
+        window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
         setToken(null);
         setUser(null);
         setIsReady(true);
       });
   }, []);
 
+  useEffect(() => {
+    const handleUnauthorized = (event: Event) => {
+      const message =
+        event instanceof CustomEvent && typeof event.detail?.message === "string"
+          ? event.detail.message
+          : "Session expired. Sign in again.";
+      window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+      startTransition(() => {
+        setToken(null);
+        setUser(null);
+        setError(message);
+        setIsReady(true);
+      });
+    };
+
+    window.addEventListener(AUTH_UNAUTHORIZED_EVENT, handleUnauthorized);
+    return () => window.removeEventListener(AUTH_UNAUTHORIZED_EVENT, handleUnauthorized);
+  }, []);
+
   const saveSession = async (nextToken: string) => {
-    window.localStorage.setItem(STORAGE_KEY, nextToken);
+    window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, nextToken);
     const nextUser = await fetchMe(nextToken);
     startTransition(() => {
       setToken(nextToken);
@@ -76,7 +95,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
-    window.localStorage.removeItem(STORAGE_KEY);
+    window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
     startTransition(() => {
       setToken(null);
       setUser(null);

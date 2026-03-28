@@ -1,0 +1,4 @@
+INFO:     127.0.0.1:52208 - "POST /auth/register HTTP/1.1" 201 Created
+INFO:     127.0.0.1:52208 - "POST /conversations HTTP/1.1" 201 Created
+INFO:     127.0.0.1:52208 - "POST /conversations/1985fea8-065a-41f6-b44a-3965c39d4eee/messages/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53451 - "GET /openapi.json HTTP/1.1" 200 OK

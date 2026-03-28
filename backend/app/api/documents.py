@@ -3,12 +3,13 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.schemas.document import DocumentResponse, DocumentStatusResponse
+from app.schemas.document import DocumentMoveRequest, DocumentResponse, DocumentStatusResponse
 from app.services.auth import get_current_user
 from app.services.documents import (
     delete_document_for_user,
     get_document_for_user,
     list_documents_for_user,
+    move_document_for_user,
     prepare_document_upload,
     process_document,
     remove_uploaded_file,
@@ -25,6 +26,7 @@ def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     source_key: str | None = Form(default=None),
+    folder_id: str | None = Form(default=None),
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ) -> DocumentResponse:
@@ -36,6 +38,7 @@ def upload_document(
             filename=file.filename or storage_path.name,
             source_key=source_key,
             storage_path=str(storage_path),
+            folder_id=folder_id,
         )
     except Exception:
         try:
@@ -128,3 +131,14 @@ def get_document_status(
 def delete_document(document_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)) -> Response:
     delete_document_for_user(db, document_id, str(user.id))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch("/{document_id}/move", response_model=DocumentResponse)
+def move_document(
+    document_id: str,
+    payload: DocumentMoveRequest,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+) -> DocumentResponse:
+    document = move_document_for_user(db, document_id, str(user.id), payload)
+    return DocumentResponse.model_validate(document)

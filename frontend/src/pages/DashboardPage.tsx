@@ -1,8 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type KeyboardEvent } from "react";
 import {
+  ChevronDown,
   FileUp,
+  Globe2,
   LogOut,
   MessagesSquare,
+  MoveRight,
+  PencilLine,
+  Plus,
   RefreshCcw,
   SendHorizontal,
   SlidersHorizontal,
@@ -12,18 +17,24 @@ import {
 
 import {
   createConversation,
+  createFolder,
   deleteDocument,
+  deleteFolder,
   fetchConversation,
   fetchConversations,
   fetchDocuments,
+  fetchFolders,
+  moveDocument,
   streamConversationMessage,
   streamDocumentStatus,
+  updateFolder,
   uploadDocument,
 } from "@/api/client";
-import type { AgentTrace, Citation, Conversation, DocumentRecord, Message, MetadataFilters } from "@/api/types";
+import type { AgentTrace, Citation, Conversation, DocumentRecord, FolderRecord, Message, MetadataFilters } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/hooks/use-auth";
 
@@ -62,6 +73,111 @@ function mergeDocumentRecord(items: DocumentRecord[], document: DocumentRecord) 
   const nextItems = [...items];
   nextItems[index] = document;
   return nextItems;
+}
+
+function upsertFolderRecord(items: FolderRecord[], folder: FolderRecord) {
+  const index = items.findIndex((item) => item.id === folder.id);
+  if (index === -1) {
+    return [...items, folder];
+  }
+
+  const nextItems = [...items];
+  nextItems[index] = folder;
+  return nextItems;
+}
+
+function sortFolders(folders: FolderRecord[]) {
+  return [...folders].sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function buildFolderMap(folders: FolderRecord[]) {
+  return new Map(folders.map((folder) => [folder.id, folder]));
+}
+
+function buildFolderChildrenMap(folders: FolderRecord[]) {
+  const childrenMap = new Map<string | null, FolderRecord[]>();
+  for (const folder of sortFolders(folders)) {
+    const siblings = childrenMap.get(folder.parent_id) ?? [];
+    childrenMap.set(folder.parent_id, [...siblings, folder]);
+  }
+  return childrenMap;
+}
+
+function getFolderPath(folderId: string | null, foldersById: Map<string, FolderRecord>) {
+  if (!folderId) {
+    return "/private";
+  }
+
+  const folder = foldersById.get(folderId);
+  if (!folder) {
+    return "/private";
+  }
+
+  const segments = [folder.name];
+  let current = folder;
+  while (current.parent_id) {
+    const parent = foldersById.get(current.parent_id);
+    if (!parent) {
+      break;
+    }
+    segments.push(parent.name);
+    current = parent;
+  }
+  segments.reverse();
+  return `/${folder.scope}/${segments.join("/")}`;
+}
+
+function describeDocumentLocation(document: DocumentRecord, foldersById: Map<string, FolderRecord>, currentUserId: string | undefined) {
+  if (document.folder_id) {
+    return getFolderPath(document.folder_id, foldersById);
+  }
+  if (document.user_id !== currentUserId) {
+    return "/global";
+  }
+  return "/private";
+}
+
+function countDocumentsByFolder(documents: DocumentRecord[]) {
+  return documents.reduce<Record<string, number>>((counts, document) => {
+    const key = document.folder_id ?? "__private_root__";
+    counts[key] = (counts[key] ?? 0) + 1;
+    return counts;
+  }, {});
+}
+
+function collectDescendantIds(folderId: string, childrenMap: Map<string | null, FolderRecord[]>) {
+  const descendants = new Set<string>();
+  const queue = [...(childrenMap.get(folderId) ?? [])];
+
+  while (queue.length > 0) {
+    const next = queue.shift();
+    if (!next || descendants.has(next.id)) {
+      continue;
+    }
+    descendants.add(next.id);
+    queue.push(...(childrenMap.get(next.id) ?? []));
+  }
+
+  return descendants;
+}
+
+function getDocumentsForSelectedFolder(
+  documents: DocumentRecord[],
+  selectedFolderId: string | null,
+  currentUserId: string | undefined,
+) {
+  if (selectedFolderId) {
+    return documents.filter((document) => document.folder_id === selectedFolderId);
+  }
+  return documents.filter((document) => document.folder_id === null && document.user_id === currentUserId);
+}
+
+function buildFolderSelectOptions(folders: FolderRecord[]) {
+  const foldersById = buildFolderMap(folders);
+  return sortFolders(folders).map((folder) => ({
+    value: folder.id,
+    label: `${folder.scope === "global" ? "[Shared]" : "[Private]"} ${getFolderPath(folder.id, foldersById)}`,
+  }));
 }
 
 function describeCompletedUpload(filename: string, result: DocumentRecord["last_ingestion_result"]) {
@@ -369,19 +485,88 @@ function MessageBubble({ message }: { message: Message }) {
   );
 }
 
+function FolderTreeNode({
+  folder,
+  childrenMap,
+  selectedFolderId,
+  documentCounts,
+  onSelect,
+  level = 0,
+}: {
+  folder: FolderRecord;
+  childrenMap: Map<string | null, FolderRecord[]>;
+  selectedFolderId: string | null;
+  documentCounts: Record<string, number>;
+  onSelect: (folderId: string) => void;
+  level?: number;
+}) {
+  const children = childrenMap.get(folder.id) ?? [];
+  const isSelected = selectedFolderId === folder.id;
+
+  return (
+    <div className="space-y-2">
+      <button
+        className={`flex w-full items-center justify-between rounded-[18px] border px-3 py-2 text-left text-sm transition ${
+          isSelected ? "border-pine bg-pine/10 text-ink" : "border-ink/10 bg-white text-ink/70 hover:border-pine/25"
+        }`}
+        onClick={() => onSelect(folder.id)}
+        style={{ marginLeft: `${level * 14}px` }}
+        type="button"
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          {folder.scope === "global" ? <Globe2 className="h-4 w-4 shrink-0 text-pine" /> : <div className="h-4 w-4 shrink-0 rounded-full border border-ink/20" />}
+          <span className="truncate">{folder.name}</span>
+          <span className="rounded-full bg-paper px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-ink/45">
+            {folder.scope === "global" ? "Shared" : "Private"}
+          </span>
+        </div>
+        <span className="text-[11px] text-ink/45">{documentCounts[folder.id] ?? 0}</span>
+      </button>
+      {children.length ? (
+        <div className="space-y-2">
+          {children.map((child) => (
+            <FolderTreeNode
+              key={child.id}
+              childrenMap={childrenMap}
+              documentCounts={documentCounts}
+              folder={child}
+              level={level + 1}
+              onSelect={onSelect}
+              selectedFolderId={selectedFolderId}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function DocumentCard({
   document,
+  currentUserId,
   deletingDocumentId,
+  movingDocumentId,
+  folderOptions,
+  foldersById,
   onDelete,
+  onMove,
 }: {
   document: DocumentRecord;
+  currentUserId: string | undefined;
   deletingDocumentId: string | null;
+  movingDocumentId: string | null;
+  folderOptions: Array<{ value: string | null; label: string }>;
+  foldersById: Map<string, FolderRecord>;
   onDelete: (document: DocumentRecord) => Promise<void>;
+  onMove: (document: DocumentRecord, folderId: string | null) => Promise<void>;
 }) {
   const metadataHighlights = getMetadataHighlights(document);
   const metadataSummary = truncateText(document.extracted_metadata?.summary, 180);
-  const canDelete = terminalIngestionStatuses.has(document.ingestion_job.status);
+  const isOwned = document.user_id === currentUserId;
+  const canDelete = terminalIngestionStatuses.has(document.ingestion_job.status) && isOwned;
+  const canMove = isOwned;
   const isDeleting = deletingDocumentId === document.id;
+  const isMoving = movingDocumentId === document.id;
   const showMetadataError =
     document.metadata_status === "failed" &&
     document.metadata_error &&
@@ -409,7 +594,27 @@ function DocumentCard({
         v{document.version}
         {document.source_key !== document.filename ? ` · ${document.source_key}` : ""}
       </div>
-      {!canDelete ? <div className="mt-2 text-xs text-ink/45">Deletion unlocks after the ingestion job reaches a terminal state.</div> : null}
+      <div className="mt-1 text-xs text-ink/45">Location: {describeDocumentLocation(document, foldersById, currentUserId)}</div>
+      {!canDelete && isOwned ? <div className="mt-2 text-xs text-ink/45">Deletion unlocks after the ingestion job reaches a terminal state.</div> : null}
+      {!isOwned ? <div className="mt-2 text-xs text-ink/45">Shared document. Only the owner can move or delete it.</div> : null}
+
+      {canMove ? (
+        <div className="mt-3 flex items-center gap-2">
+          <MoveRight className="h-4 w-4 text-ink/45" />
+          <select
+            className="w-full rounded-[16px] border border-ink/10 bg-white px-3 py-2 text-xs text-ink/70"
+            disabled={isMoving}
+            onChange={(event) => void onMove(document, event.target.value || null)}
+            value={document.folder_id ?? ""}
+          >
+            {folderOptions.map((option) => (
+              <option key={option.value ?? "private-root"} value={option.value ?? ""}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : null}
 
       {metadataHighlights.length ? (
         <div className="mt-3 flex flex-wrap gap-2">
@@ -445,6 +650,7 @@ export function DashboardPage() {
   const [activeView, setActiveView] = useState<DashboardView>("chat");
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
+  const [folders, setFolders] = useState<FolderRecord[]>([]);
   const [metadataFilters, setMetadataFilters] = useState<MetadataFilters>(() => createEmptyMetadataFilters());
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -454,6 +660,14 @@ export function DashboardPage() {
   const [isUploading, setIsUploading] = useState(false);
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const [deletingDocumentId, setDeletingDocumentId] = useState<string | null>(null);
+  const [movingDocumentId, setMovingDocumentId] = useState<string | null>(null);
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [newRootFolderScope, setNewRootFolderScope] = useState<FolderRecord["scope"]>("private");
+  const [selectedFolderNameDraft, setSelectedFolderNameDraft] = useState("");
+  const [selectedParentId, setSelectedParentId] = useState("");
+  const [isSelectedFolderPanelOpen, setIsSelectedFolderPanelOpen] = useState(false);
+  const [isSavingFolder, setIsSavingFolder] = useState(false);
   const activeConversationIdRef = useRef<string | null>(null);
   const messagesViewportRef = useRef<HTMLDivElement | null>(null);
   const documentStreamControllersRef = useRef<Map<string, AbortController>>(new Map());
@@ -462,6 +676,8 @@ export function DashboardPage() {
     () => conversations.find((conversation) => conversation.id === activeConversationId) ?? null,
     [activeConversationId, conversations],
   );
+  const foldersById = useMemo(() => buildFolderMap(folders), [folders]);
+  const folderChildrenMap = useMemo(() => buildFolderChildrenMap(folders), [folders]);
   const metadataOptions = useMemo(() => collectMetadataOptions(documents), [documents]);
   const activeFilterChips = useMemo(
     () =>
@@ -479,6 +695,46 @@ export function DashboardPage() {
     [documents],
   );
   const documentStatusSummary = useMemo(() => summarizeDocumentStatuses(documents), [documents]);
+  const documentCounts = useMemo(() => countDocumentsByFolder(documents), [documents]);
+  const sharedRootFolders = useMemo(
+    () => (folderChildrenMap.get(null) ?? []).filter((folder) => folder.scope === "global"),
+    [folderChildrenMap],
+  );
+  const privateRootFolders = useMemo(
+    () => (folderChildrenMap.get(null) ?? []).filter((folder) => folder.scope === "private"),
+    [folderChildrenMap],
+  );
+  const selectedFolder = useMemo(
+    () => folders.find((folder) => folder.id === selectedFolderId) ?? null,
+    [folders, selectedFolderId],
+  );
+  const currentFolderDocuments = useMemo(
+    () => getDocumentsForSelectedFolder(documents, selectedFolderId, user?.id),
+    [documents, selectedFolderId, user?.id],
+  );
+  const folderOptions = useMemo(
+    () => [{ value: null, label: "Private root" }, ...buildFolderSelectOptions(folders)],
+    [folders],
+  );
+  const selectedFolderDescendants = useMemo(
+    () => (selectedFolder ? collectDescendantIds(selectedFolder.id, folderChildrenMap) : new Set<string>()),
+    [folderChildrenMap, selectedFolder],
+  );
+  const parentFolderOptions = useMemo(() => {
+    if (!selectedFolder) {
+      return [];
+    }
+
+    return sortFolders(
+      folders.filter(
+        (folder) =>
+          folder.scope === selectedFolder.scope &&
+          folder.id !== selectedFolder.id &&
+          !selectedFolderDescendants.has(folder.id) &&
+          (selectedFolder.scope === "global" ? folder.user_id === user?.id : true),
+      ),
+    );
+  }, [folders, selectedFolder, selectedFolderDescendants, user?.id]);
 
   useEffect(() => {
     activeConversationIdRef.current = activeConversationId;
@@ -492,21 +748,43 @@ export function DashboardPage() {
   }, []);
 
   useEffect(() => {
+    if (!selectedFolder) {
+      setSelectedFolderNameDraft("");
+      setSelectedParentId("");
+      return;
+    }
+
+    setSelectedFolderNameDraft(selectedFolder.name);
+    setSelectedParentId(selectedFolder.parent_id ?? "");
+  }, [selectedFolder]);
+
+  useEffect(() => {
+    if (selectedFolderId && !folders.some((folder) => folder.id === selectedFolderId)) {
+      setSelectedFolderId(null);
+    }
+  }, [folders, selectedFolderId]);
+
+  useEffect(() => {
     if (!token) {
       return;
     }
 
     const load = async () => {
-      const [nextConversations, nextDocuments] = await Promise.all([fetchConversations(token), fetchDocuments(token)]);
+      const [nextConversations, nextDocuments, nextFolders] = await Promise.all([
+        fetchConversations(token),
+        fetchDocuments(token),
+        fetchFolders(token),
+      ]);
       setConversations(nextConversations);
       setDocuments(nextDocuments);
+      setFolders(nextFolders);
       if (!activeConversationId && nextConversations[0]) {
         setActiveConversationId(nextConversations[0].id);
       }
     };
 
     void load().catch((error) => setStatus(error instanceof Error ? error.message : "Failed to load workspace"));
-  }, [token]);
+  }, [activeConversationId, token]);
 
   useEffect(() => {
     if (!token || !activeConversationId) {
@@ -535,9 +813,14 @@ export function DashboardPage() {
       return;
     }
 
-    const [nextConversations, nextDocuments] = await Promise.all([fetchConversations(token), fetchDocuments(token)]);
+    const [nextConversations, nextDocuments, nextFolders] = await Promise.all([
+      fetchConversations(token),
+      fetchDocuments(token),
+      fetchFolders(token),
+    ]);
     setConversations(nextConversations);
     setDocuments(nextDocuments);
+    setFolders(nextFolders);
   };
 
   const syncConversation = async (conversationId: string) => {
@@ -627,6 +910,10 @@ export function DashboardPage() {
     if (!token) {
       return;
     }
+    if (document.user_id !== user?.id) {
+      setStatus("Only the document owner can delete this file");
+      return;
+    }
     if (!terminalIngestionStatuses.has(document.ingestion_job.status)) {
       setStatus(`Wait for ${document.filename} to finish processing before deleting it`);
       return;
@@ -652,6 +939,29 @@ export function DashboardPage() {
     }
   };
 
+  const handleMoveDocument = async (document: DocumentRecord, folderId: string | null) => {
+    if (!token) {
+      return;
+    }
+    if (document.user_id !== user?.id) {
+      setStatus("Only the document owner can move this file");
+      return;
+    }
+
+    setMovingDocumentId(document.id);
+    setStatus(`Moving ${document.filename}`);
+
+    try {
+      const moved = await moveDocument(token, document.id, folderId);
+      setDocuments((current) => mergeDocumentRecord(current, moved));
+      setStatus(`${document.filename} moved`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Failed to move document");
+    } finally {
+      setMovingDocumentId((current) => (current === document.id ? null : current));
+    }
+  };
+
   const handleUploadFiles = async (files: File[]) => {
     if (!token || files.length === 0) {
       return;
@@ -662,9 +972,9 @@ export function DashboardPage() {
 
     try {
       for (const file of files) {
-        const existingDocument = documents.find((document) => document.source_key === file.name);
+        const existingDocument = documents.find((document) => document.source_key === file.name && document.user_id === user?.id);
         setStatus(`Uploading ${file.name}`);
-        const created = await uploadDocument(token, file, file.name);
+        const created = await uploadDocument(token, file, file.name, selectedFolderId);
         const isReindex = existingDocument?.id === created.id && (existingDocument?.version ?? 0) > 0;
 
         setDocuments((current) => upsertDocumentRecord(current, created));
@@ -690,6 +1000,97 @@ export function DashboardPage() {
     } finally {
       setIsUploading(false);
       setIsDraggingFiles(false);
+    }
+  };
+
+  const handleCreateFolder = async () => {
+    if (!token || !newFolderName.trim()) {
+      return;
+    }
+
+    setIsSavingFolder(true);
+    try {
+      const payload = selectedFolder
+        ? { name: newFolderName.trim(), parent_id: selectedFolder.id, scope: selectedFolder.scope }
+        : { name: newFolderName.trim(), parent_id: null, scope: newRootFolderScope };
+      const created = await createFolder(token, payload);
+      setFolders((current) => upsertFolderRecord(current, created));
+      setSelectedFolderId(created.id);
+      setNewFolderName("");
+      setStatus(`Created folder ${created.name}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Failed to create folder");
+    } finally {
+      setIsSavingFolder(false);
+    }
+  };
+
+  const handleRenameSelectedFolder = async () => {
+    if (!token || !selectedFolder || !selectedFolderNameDraft.trim()) {
+      return;
+    }
+    if (selectedFolder.user_id !== user?.id) {
+      setStatus("Only the folder owner can rename this folder");
+      return;
+    }
+
+    setIsSavingFolder(true);
+    try {
+      const updated = await updateFolder(token, selectedFolder.id, { name: selectedFolderNameDraft.trim() });
+      setFolders((current) => upsertFolderRecord(current, updated));
+      setStatus(`Renamed folder to ${updated.name}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Failed to rename folder");
+    } finally {
+      setIsSavingFolder(false);
+    }
+  };
+
+  const handleMoveSelectedFolder = async () => {
+    if (!token || !selectedFolder) {
+      return;
+    }
+    if (selectedFolder.user_id !== user?.id) {
+      setStatus("Only the folder owner can move this folder");
+      return;
+    }
+
+    setIsSavingFolder(true);
+    try {
+      const updated = await updateFolder(token, selectedFolder.id, { parent_id: selectedParentId || null });
+      setFolders((current) => upsertFolderRecord(current, updated));
+      setStatus(`Moved folder ${updated.name}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Failed to move folder");
+    } finally {
+      setIsSavingFolder(false);
+    }
+  };
+
+  const handleDeleteSelectedFolder = async () => {
+    if (!token || !selectedFolder) {
+      return;
+    }
+    if (selectedFolder.user_id !== user?.id) {
+      setStatus("Only the folder owner can delete this folder");
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete ${selectedFolder.name}? Nested folders and documents inside it will also be removed.`);
+    if (!confirmed) {
+      return;
+    }
+
+    setIsSavingFolder(true);
+    try {
+      await deleteFolder(token, selectedFolder.id);
+      setSelectedFolderId(null);
+      await refreshWorkspace();
+      setStatus(`Deleted folder ${selectedFolder.name}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Failed to delete folder");
+    } finally {
+      setIsSavingFolder(false);
     }
   };
 
@@ -778,6 +1179,9 @@ export function DashboardPage() {
           onStatus: (nextStatus) => {
             setStatus(nextStatus);
           },
+          onRedactionStatus: (_stage, text) => {
+            setStatus(text);
+          },
           onTrace: (agentTrace) => {
             setMessages((current) => {
               const hasDraftMessage = current.some((message) => message.id === assistantDraftId);
@@ -844,6 +1248,9 @@ export function DashboardPage() {
       setStatus("Response complete");
       setActiveView("chat");
     } catch (error) {
+      setMessages((current) =>
+        current.filter((message) => !(message.id === assistantDraftId && !message.content.trim() && message.role === "assistant")),
+      );
       setStatus(error instanceof Error ? error.message : "Failed to send message");
     } finally {
       setIsBusy(false);
@@ -852,12 +1259,12 @@ export function DashboardPage() {
 
   return (
     <main className="min-h-screen bg-paper px-4 py-4 text-ink lg:px-6">
-      <div className="mx-auto grid max-w-[1600px] gap-4 lg:grid-cols-[300px_minmax(0,1fr)_320px]">
-        <Card className="flex h-[calc(100vh-2rem)] flex-col gap-4 overflow-hidden bg-ink text-paper">
+      <div className="mx-auto grid w-full max-w-[1780px] gap-3 lg:grid-cols-[248px_minmax(0,1fr)_292px]">
+        <Card className="flex h-[calc(100vh-2rem)] min-h-0 flex-col gap-4 overflow-hidden bg-ink text-paper">
           <div className="flex items-start justify-between gap-3">
             <div>
               <Badge className="border-paper/15 bg-paper/10 text-paper/75">Operator</Badge>
-              <h1 className="mt-3 text-2xl font-semibold">{user?.email}</h1>
+              <h1 className="mt-3 break-all text-xl font-semibold leading-tight">{user?.email}</h1>
               <p className="text-sm text-paper/60">JWT-secured local workspace</p>
             </div>
             <button className="rounded-full border border-paper/15 p-2 text-paper/75" onClick={logout} type="button">
@@ -898,7 +1305,7 @@ export function DashboardPage() {
             </button>
           </div>
 
-          <div className="space-y-2 overflow-y-auto pr-1">
+          <div className="min-h-0 space-y-2 overflow-y-auto pr-1">
             {conversations.map((conversation) => (
               <button
                 key={conversation.id}
@@ -923,7 +1330,7 @@ export function DashboardPage() {
             <div className="text-[11px] uppercase tracking-[0.18em] text-paper/45">Workspace status</div>
             <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
               <div>{documents.length} docs</div>
-              <div>{conversations.length} threads</div>
+              <div>{folders.length} folders</div>
               <div>{documentStatusSummary.processing} processing</div>
               <div>{documentStatusSummary.failed} failed</div>
             </div>
@@ -961,7 +1368,7 @@ export function DashboardPage() {
                   messages.map((message) => <MessageBubble key={message.id} message={message} />)
                 ) : (
                   <div className="rounded-[28px] border border-dashed border-ink/15 bg-white/55 p-8 text-sm text-ink/55">
-                    Ask about indexed documents, route a workspace analytics question through text-to-SQL, or fall back to web-backed answers when the knowledge base is insufficient.
+                    Ask grounded questions, inspect `/global` or `/private` paths, find files by pattern, or drill into specific documents through the knowledge-base explorer.
                   </div>
                 )}
               </div>
@@ -969,7 +1376,7 @@ export function DashboardPage() {
               <div className="border-t border-ink/10 pt-4">
                 <Textarea
                   className="min-h-[140px]"
-                  placeholder="Ask about an uploaded document, your workspace data, or a web-backed fallback question..."
+                  placeholder="Ask about a document, inspect a folder path, or explore the knowledge base by filename, pattern, or content..."
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
                   onKeyDown={handleDraftKeyDown}
@@ -984,7 +1391,7 @@ export function DashboardPage() {
               </div>
             </Card>
 
-            <div className="flex h-[calc(100vh-2rem)] min-h-0 flex-col gap-4">
+            <div className="flex h-[calc(100vh-2rem)] min-h-0 flex-col gap-3">
               <Card className="flex max-h-[320px] min-h-0 shrink-0 flex-col overflow-hidden">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
@@ -1037,7 +1444,7 @@ export function DashboardPage() {
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <div>
                     <h3 className="text-lg font-semibold">Knowledge base</h3>
-                    <p className="mt-1 text-sm text-ink/55">Switch to the Ingestion view for drag-and-drop uploads and full document management.</p>
+                    <p className="mt-1 text-sm text-ink/55">Folder-aware inventory with shared and private locations.</p>
                   </div>
                   <Button className="shrink-0 border-ink/10 bg-white text-ink hover:bg-paper" onClick={() => setActiveView("ingestion")} type="button">
                     Open ingestion
@@ -1049,9 +1456,14 @@ export function DashboardPage() {
                     documents.map((document) => (
                       <DocumentCard
                         key={document.id}
+                        currentUserId={user?.id}
                         deletingDocumentId={deletingDocumentId}
                         document={document}
+                        folderOptions={folderOptions}
+                        foldersById={foldersById}
+                        movingDocumentId={movingDocumentId}
                         onDelete={handleDeleteDocument}
+                        onMove={handleMoveDocument}
                       />
                     ))
                   ) : (
@@ -1067,9 +1479,13 @@ export function DashboardPage() {
           <>
             <Card className="flex h-[calc(100vh-2rem)] flex-col overflow-hidden">
               <div className="border-b border-ink/10 pb-4">
-                <Badge>Manual upload only</Badge>
+                <Badge>Folder-aware ingestion</Badge>
                 <h2 className="mt-3 text-3xl font-semibold">Ingestion workspace</h2>
                 <p className="mt-1 text-sm text-ink/60">{status}</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge className="border-ink/10 bg-white text-ink">Target: {selectedFolder ? getFolderPath(selectedFolder.id, foldersById) : "/private"}</Badge>
+                  <Badge className="border-ink/10 bg-white text-ink">{selectedFolder?.scope === "global" ? "Shared folder" : "Private folder"}</Badge>
+                </div>
               </div>
 
               <div className="space-y-4 overflow-y-auto py-5">
@@ -1088,10 +1504,10 @@ export function DashboardPage() {
                   <FileUp className="h-7 w-7 text-pine" />
                   <div className="mt-4 text-lg font-semibold text-ink">Drop files here or click to upload</div>
                   <p className="mt-2 max-w-xl text-sm text-ink/60">
-                    Upload `.txt`, `.md`, `.html`, `.docx`, or `.pdf` files. Processing starts immediately, metadata is refreshed automatically, and live status updates stream back into this view.
+                    Upload into the currently selected folder. Files are chunked for retrieval and the full extracted text is stored for explorer tools like `grep`, `glob`, and `read`.
                   </p>
                   <div className="mt-4 rounded-full border border-ink/10 bg-white px-4 py-2 text-xs uppercase tracking-[0.18em] text-ink/50">
-                    {isUploading ? "Uploading..." : "Drag and drop enabled"}
+                    {isUploading ? "Uploading..." : `Current target: ${selectedFolder ? selectedFolder.name : "Private root"}`}
                   </div>
                 </label>
 
@@ -1105,24 +1521,31 @@ export function DashboardPage() {
                 <div className="rounded-[26px] border border-ink/10 bg-white px-5 py-5">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <h3 className="text-lg font-semibold">Document inventory</h3>
-                      <p className="mt-1 text-sm text-ink/55">Track queued and completed ingests, review extracted metadata, and delete stale files.</p>
+                      <h3 className="text-lg font-semibold">Current folder inventory</h3>
+                      <p className="mt-1 text-sm text-ink/55">
+                        Showing documents in {selectedFolder ? getFolderPath(selectedFolder.id, foldersById) : "/private"}.
+                      </p>
                     </div>
-                    <Badge>{documents.length} docs</Badge>
+                    <Badge>{currentFolderDocuments.length} docs</Badge>
                   </div>
                   <div className="mt-4 space-y-3">
-                    {documents.length ? (
-                      documents.map((document) => (
+                    {currentFolderDocuments.length ? (
+                      currentFolderDocuments.map((document) => (
                         <DocumentCard
                           key={document.id}
+                          currentUserId={user?.id}
                           deletingDocumentId={deletingDocumentId}
                           document={document}
+                          folderOptions={folderOptions}
+                          foldersById={foldersById}
+                          movingDocumentId={movingDocumentId}
                           onDelete={handleDeleteDocument}
+                          onMove={handleMoveDocument}
                         />
                       ))
                     ) : (
                       <div className="rounded-[22px] border border-dashed border-ink/15 bg-paper px-4 py-8 text-sm text-ink/55">
-                        No documents uploaded yet.
+                        No documents in this folder yet.
                       </div>
                     )}
                   </div>
@@ -1130,63 +1553,203 @@ export function DashboardPage() {
               </div>
             </Card>
 
-            <div className="flex h-[calc(100vh-2rem)] min-h-0 flex-col gap-4">
-              <Card className="space-y-4">
+            <div className="flex h-[calc(100vh-2rem)] min-h-0 flex-col gap-3">
+              <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <h3 className="text-lg font-semibold">Live job feed</h3>
-                    <p className="mt-1 text-sm text-ink/55">Realtime ingestion updates replace the old client polling loop.</p>
+                    <h3 className="text-lg font-semibold">Folder tree</h3>
+                    <p className="mt-1 text-sm text-ink/55">Shared folders are visible to everyone. Private folders stay scoped to your account.</p>
                   </div>
                   <button className="text-ink/45" onClick={() => void refreshWorkspace()} type="button">
                     <RefreshCcw className="h-4 w-4" />
                   </button>
                 </div>
-                <div className="space-y-3">
-                  {activeIngestionDocuments.length ? (
-                    activeIngestionDocuments.map((document) => (
-                      <div key={document.id} className="rounded-[22px] border border-ink/10 bg-paper px-4 py-4">
-                        <div className="text-sm font-medium text-ink">{document.filename}</div>
-                        <div className="mt-2 text-xs uppercase tracking-[0.18em] text-ink/45">{getDocumentBadgeLabel(document)}</div>
-                        <p className="mt-2 text-xs leading-6 text-ink/60">{describeDocumentProcessingStatus(document)}</p>
+
+                <div className="mt-4 rounded-[22px] border border-ink/10 bg-paper/70 px-4 py-4">
+                  <div className="flex flex-col gap-3">
+                    <Input placeholder="New folder name" value={newFolderName} onChange={(event) => setNewFolderName(event.target.value)} />
+                    {!selectedFolder ? (
+                      <select
+                        className="rounded-[16px] border border-ink/10 bg-white px-3 py-2 text-sm text-ink/70"
+                        onChange={(event) => setNewRootFolderScope(event.target.value as FolderRecord["scope"])}
+                        value={newRootFolderScope}
+                      >
+                        <option value="private">Create in private root</option>
+                        <option value="global">Create in shared root</option>
+                      </select>
+                    ) : null}
+                    <Button disabled={isSavingFolder || !newFolderName.trim()} onClick={() => void handleCreateFolder()} type="button">
+                      <Plus className="mr-2 h-4 w-4" />
+                      {selectedFolder ? `Add child to ${selectedFolder.name}` : "Create folder"}
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="mt-4 flex-1 space-y-4 overflow-y-auto pr-1">
+                  <div className="space-y-3">
+                    <button
+                      className={`flex w-full items-center justify-between rounded-[18px] border px-3 py-2 text-left text-sm transition ${
+                        selectedFolderId === null ? "border-pine bg-pine/10 text-ink" : "border-ink/10 bg-white text-ink/70 hover:border-pine/25"
+                      }`}
+                      onClick={() => setSelectedFolderId(null)}
+                      type="button"
+                    >
+                      <div className="flex items-center gap-2">
+                        <div className="h-4 w-4 rounded-full border border-ink/20" />
+                        <span>Private root</span>
                       </div>
-                    ))
-                  ) : (
-                    <div className="rounded-[22px] border border-dashed border-ink/15 bg-paper px-4 py-8 text-sm text-ink/55">
-                      No active ingestion jobs right now.
+                      <span className="text-[11px] text-ink/45">{documentCounts["__private_root__"] ?? 0}</span>
+                    </button>
+                    {privateRootFolders.map((folder) => (
+                      <FolderTreeNode
+                        key={folder.id}
+                        childrenMap={folderChildrenMap}
+                        documentCounts={documentCounts}
+                        folder={folder}
+                        onSelect={setSelectedFolderId}
+                        selectedFolderId={selectedFolderId}
+                      />
+                    ))}
+                  </div>
+
+                  <div className="space-y-3">
+                    <div className="rounded-[18px] border border-ink/10 bg-white px-3 py-2 text-xs uppercase tracking-[0.18em] text-ink/45">
+                      Shared space
                     </div>
-                  )}
+                    {sharedRootFolders.length ? (
+                      sharedRootFolders.map((folder) => (
+                        <FolderTreeNode
+                          key={folder.id}
+                          childrenMap={folderChildrenMap}
+                          documentCounts={documentCounts}
+                          folder={folder}
+                          onSelect={setSelectedFolderId}
+                          selectedFolderId={selectedFolderId}
+                        />
+                      ))
+                    ) : (
+                      <div className="rounded-[18px] border border-dashed border-ink/15 bg-paper px-4 py-6 text-sm text-ink/50">
+                        No shared folders yet.
+                      </div>
+                    )}
+                  </div>
                 </div>
               </Card>
 
-              <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <SlidersHorizontal className="h-4 w-4 text-pine" />
-                    <h3 className="text-lg font-semibold">Metadata catalog</h3>
+              <Card className="overflow-hidden p-0">
+                <button
+                  aria-expanded={isSelectedFolderPanelOpen}
+                  className="flex w-full items-start justify-between gap-3 px-5 py-4 text-left"
+                  onClick={() => setIsSelectedFolderPanelOpen((current) => !current)}
+                  type="button"
+                >
+                  <div className="min-w-0">
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-ink/45">Selected folder</div>
+                    <div className="mt-2 text-base font-semibold text-ink">
+                      {selectedFolder ? selectedFolder.name : "Private root"}
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-sm text-ink/55">
+                      {selectedFolder ? getFolderPath(selectedFolder.id, foldersById) : "No folder selected. Open this panel to manage folders or review ingestion jobs."}
+                    </p>
                   </div>
-                  <Button className="shrink-0 border-ink/10 bg-white text-ink hover:bg-paper" onClick={() => setActiveView("chat")} type="button">
-                    Back to chat
-                  </Button>
-                </div>
-                <p className="mt-2 text-sm text-ink/55">These values are available as retrieval filters in the Chat interface.</p>
-                <div className="mt-4 space-y-4 overflow-y-auto pr-1">
-                  {metadataFilterSections.map(({ key, label }) => (
-                    <div key={key} className="space-y-2">
-                      <div className="text-xs uppercase tracking-[0.18em] text-ink/45">{label}</div>
-                      {metadataOptions[key].length ? (
-                        <div className="flex flex-wrap gap-2">
-                          {metadataOptions[key].map((value) => (
-                            <span key={`${key}-${value}`} className="rounded-full border border-ink/10 bg-white px-3 py-1 text-xs font-medium text-ink/70">
-                              {formatMetadataValue(value)}
-                            </span>
-                          ))}
+                  <ChevronDown className={`mt-1 h-4 w-4 shrink-0 text-ink/45 transition ${isSelectedFolderPanelOpen ? "rotate-180" : ""}`} />
+                </button>
+
+                {isSelectedFolderPanelOpen ? (
+                  <div className="space-y-3 border-t border-ink/10 px-5 py-4">
+                    <div className="flex justify-end">
+                      <Button className="shrink-0 border-ink/10 bg-white text-ink hover:bg-paper" onClick={() => setActiveView("chat")} type="button">
+                        Back to chat
+                      </Button>
+                    </div>
+
+                    <div className="rounded-[20px] border border-ink/10 bg-paper/55">
+                      <div className="border-b border-ink/10 px-4 py-3">
+                        <div className="text-[11px] uppercase tracking-[0.18em] text-ink/45">
+                          {selectedFolder ? "Folder controls" : "No folder selected"}
                         </div>
+                        <div className="mt-1 text-sm text-ink/65">
+                          {selectedFolder ? "Rename, move, or delete the selected folder." : "Select a folder to manage it."}
+                        </div>
+                      </div>
+
+                      <div className="space-y-3 px-4 py-4">
+                        {selectedFolder ? (
+                          <>
+                            <div className="rounded-[20px] border border-ink/10 bg-white px-4 py-4">
+                              <div className="text-[11px] uppercase tracking-[0.18em] text-ink/45">Rename</div>
+                              <div className="mt-3 flex gap-2">
+                                <Input value={selectedFolderNameDraft} onChange={(event) => setSelectedFolderNameDraft(event.target.value)} />
+                                <Button
+                                  className="shrink-0"
+                                  disabled={isSavingFolder || !selectedFolderNameDraft.trim()}
+                                  onClick={() => void handleRenameSelectedFolder()}
+                                  type="button"
+                                >
+                                  <PencilLine className="mr-2 h-4 w-4" />
+                                  Save
+                                </Button>
+                              </div>
+                            </div>
+
+                            <div className="rounded-[20px] border border-ink/10 bg-white px-4 py-4">
+                              <div className="text-[11px] uppercase tracking-[0.18em] text-ink/45">Move</div>
+                              <div className="mt-3 flex gap-2">
+                                <select
+                                  className="w-full rounded-[16px] border border-ink/10 bg-white px-3 py-2 text-sm text-ink/70"
+                                  onChange={(event) => setSelectedParentId(event.target.value)}
+                                  value={selectedParentId}
+                                >
+                                  <option value="">Move to root</option>
+                                  {parentFolderOptions.map((folder) => (
+                                    <option key={folder.id} value={folder.id}>
+                                      {getFolderPath(folder.id, foldersById)}
+                                    </option>
+                                  ))}
+                                </select>
+                                <Button className="shrink-0" disabled={isSavingFolder} onClick={() => void handleMoveSelectedFolder()} type="button">
+                                  <MoveRight className="mr-2 h-4 w-4" />
+                                  Apply
+                                </Button>
+                              </div>
+                            </div>
+
+                            <Button
+                              className="w-full border-berry/20 bg-white text-berry hover:bg-berry/5"
+                              disabled={isSavingFolder}
+                              onClick={() => void handleDeleteSelectedFolder()}
+                              type="button"
+                            >
+                              <Trash2 className="mr-2 h-4 w-4" />
+                              Delete folder
+                            </Button>
+                          </>
+                        ) : (
+                          <div className="rounded-[20px] border border-dashed border-ink/15 bg-white px-4 py-6 text-sm text-ink/55">
+                            Select a folder to rename, move, or delete it.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="text-[11px] uppercase tracking-[0.18em] text-ink/45">Live job feed</div>
+                      {activeIngestionDocuments.length ? (
+                        activeIngestionDocuments.map((document) => (
+                          <div key={document.id} className="rounded-[22px] border border-ink/10 bg-paper px-4 py-4">
+                            <div className="text-sm font-medium text-ink">{document.filename}</div>
+                            <div className="mt-2 text-xs uppercase tracking-[0.18em] text-ink/45">{getDocumentBadgeLabel(document)}</div>
+                            <p className="mt-2 text-xs leading-6 text-ink/60">{describeDocumentProcessingStatus(document)}</p>
+                          </div>
+                        ))
                       ) : (
-                        <div className="text-xs text-ink/40">No extracted {label.toLowerCase()} yet.</div>
+                        <div className="rounded-[22px] border border-dashed border-ink/15 bg-paper px-4 py-8 text-sm text-ink/55">
+                          No active ingestion jobs right now.
+                        </div>
                       )}
                     </div>
-                  ))}
-                </div>
+                  </div>
+                ) : null}
               </Card>
             </div>
           </>
